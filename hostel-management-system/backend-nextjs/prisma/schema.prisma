@@ -1,0 +1,137 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlserver"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id    Int     @id @default(autoincrement())
+  name  String
+  email String  @unique
+  password String
+  role  String  @default("ADMIN")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@map("Users")
+}
+
+model Student {
+  id                  Int    @id @default(autoincrement())
+  name                String
+  email               String? @unique
+  phone               String?
+  registrationNumber  String @unique
+  department          String?
+  yearOfStudy         Int?
+  password            String?
+  status              String @default("ACTIVE")
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  allocations         Allocation[]
+  invoices            Invoice[]
+  payments            Payment[]
+
+  @@map("Students")
+}
+
+model Room {
+  id          Int     @id @default(autoincrement())
+  roomNumber  String  @unique
+  block       String?
+  floor       Int?
+  capacity    Int?
+  type        String?
+  rentalCost  Decimal @db.Decimal(10, 2)
+  status      String  @default("AVAILABLE")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  allocations Allocation[]
+
+  @@map("Rooms")
+}
+
+model Allocation {
+  id            Int     @id @default(autoincrement())
+  studentId     Int
+  roomId        Int
+  checkInDate   DateTime?
+  checkOutDate  DateTime?
+  status        String  @default("ACTIVE")
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  student       Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+  room          Room @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@map("Allocations")
+}
+
+model StaffMember {
+  id          Int     @id @default(autoincrement())
+  name        String
+  email       String? @unique
+  position    String?
+  department  String?
+  salary      Decimal? @db.Decimal(10, 2)
+  status      String  @default("ACTIVE")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("Staff")
+}
+
+model Maintenance {
+  id          Int     @id @default(autoincrement())
+  description String?
+  room        String?
+  priority    String  @default("LOW")
+  status      String  @default("PENDING")
+  reportedDate DateTime?
+  assignedTo  Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@map("Maintenance")
+}
+
+model Invoice {
+  id          Int     @id @default(autoincrement())
+  studentId   Int
+  amount      Decimal @db.Decimal(10, 2)
+  dueDate     DateTime?
+  status      String  @default("PENDING")
+  month       String?
+  year        Int?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  student     Student @relation(fields: [studentId], references: [id], onDelete: NoAction, onUpdate: NoAction)
+  payments    Payment[]
+
+  @@map("Invoices")
+}
+
+model Payment {
+  id          Int     @id @default(autoincrement())
+  invoiceId   Int
+  studentId   Int
+  amount      Decimal @db.Decimal(10, 2)
+  paymentDate DateTime?
+  method      String?
+  reference   String?
+  createdAt   DateTime @default(now())
+
+  invoice     Invoice @relation(fields: [invoiceId], references: [id], onDelete: Cascade)
+  student     Student @relation(fields: [studentId], references: [id], onDelete: Cascade)
+
+  @@map("Payments")
+}
