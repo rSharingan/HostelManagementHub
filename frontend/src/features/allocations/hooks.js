@@ -6,6 +6,7 @@ import {
   createAllocationAPI,
   updateAllocationAPI,
   deleteAllocationAPI,
+  getAllocationSummaryAPI,
 } from './api'
 
 const ALLOCATIONS_QUERY_KEY = ['allocations']
@@ -53,4 +54,18 @@ export const useDeleteAllocation = () => {
       queryClient.invalidateQueries({ queryKey: ALLOCATIONS_QUERY_KEY })
     },
   })
+}
+
+export const useAllocationsSummary = () => {
+  const { data, isLoading, error } = useQuery({
+    queryKey: ['allocations', 'summary'],
+    queryFn: getAllocationSummaryAPI,
+  })
+
+  return {
+    availableRooms: data?.available || [],
+    bookedRooms: data?.booked || [],
+    loading: isLoading,
+    error,
+  }
 }
