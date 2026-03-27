@@ -6,6 +6,25 @@ import { useAllocationsSummary } from './hooks'
 export const AllocationsPage = () => {
   const { availableRooms, bookedRooms, loading, error } = useAllocationsSummary()
 
+  // APPLY ROOM FUNCTION
+  const applyRoom = async (roomId) => {
+    try {
+      const res = await fetch(`http://localhost:3000/api/rooms/${roomId}/apply`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        }
+      })
+
+      const data = await res.json()
+      alert(data.message || 'Request sent to admin')
+
+    } catch (err) {
+      console.error(err)
+      alert('Failed to send request')
+    }
+  }
+
   if (loading) {
     return (
       <div>
@@ -74,6 +93,14 @@ export const AllocationsPage = () => {
                     Block: {room.block} | Floor: {room.floor}
                   </div>
                   <div className="text-sm text-green-600">Status: {room.status}</div>
+
+                  {/* APPLY BUTTON */}
+                  <button
+                    onClick={() => applyRoom(room.id)}
+                    className="mt-3 w-full bg-blue-600 text-white py-1 px-3 rounded hover:bg-blue-700"
+                  >
+                    Apply
+                  </button>
                 </div>
               ))}
             </div>
