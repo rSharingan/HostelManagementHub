@@ -8,6 +8,7 @@ import { useState } from 'react'
 export const AllocationsPage = () => {
   const { availableRooms, bookedRooms, loading, error } = useAllocationsSummary()
   const [applyingId, setApplyingId] = useState(null)
+  const [appliedRooms, setAppliedRooms] = useState([])
 
   const applyRoom = async (roomId) => {
     try {
@@ -26,10 +27,9 @@ export const AllocationsPage = () => {
         throw new Error(data.message || 'Request failed')
       }
 
+      // Add to applied list instead of reloading
+      setAppliedRooms([...appliedRooms, roomId])
       alert(data.message)
-
-      // refresh UI
-      window.location.reload()
 
     } catch (err) {
       console.error(err)
@@ -65,18 +65,24 @@ export const AllocationsPage = () => {
                   <p>Block: {room.block}</p>
                   <p>Floor: {room.floor}</p>
 
-                  <button
-  type="button"
-  onClick={(e) => {
-    e.preventDefault()
-    e.stopPropagation()   // ✅ VERY IMPORTANT
-    applyRoom(room.id)
-  }}
-  disabled={applyingId === room.id}
-  className="mt-2 w-full bg-blue-600 text-white p-1 rounded"
->
-  {applyingId === room.id ? 'Applying...' : 'Apply'}
-</button>
+                  {appliedRooms.includes(room.id) ? (
+                    <p className="mt-2 w-full bg-green-100 text-green-700 p-2 rounded text-center text-sm font-semibold">
+                      Applied ✓
+                    </p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.preventDefault()
+                        e.stopPropagation()
+                        applyRoom(room.id)
+                      }}
+                      disabled={applyingId === room.id}
+                      className="mt-2 w-full bg-blue-600 text-white p-1 rounded hover:bg-blue-700 disabled:bg-gray-400"
+                    >
+                      {applyingId === room.id ? 'Applying...' : 'Apply'}
+                    </button>
+                  )}
                 </div>
               ))}
             </div>

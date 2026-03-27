@@ -203,24 +203,36 @@ app.post('/api/rooms', async (req, res) => {
 });
 
 app.post('/api/rooms/:id/apply', async (req, res) => {
-  console.log('NEW APPLY API HIT')
   try {
-    const roomId = Number(req.params.id)
-    const studentId = 1
-    const requestDate = new Date().toISOString()
+    const roomId = req.params.id;
 
+    // 1️⃣ Get logged-in user info (assuming you have req.user from auth middleware)
+    const userEmail = req.user.email; // or however your auth stores logged-in user
+
+    // 2️⃣ Get the correct student ID from the Students table
+    const students = await query(
+      'SELECT id FROM Students WHERE email = ?',
+      [userEmail]
+    );
+
+    if (students.length === 0) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const studentId = students[0].id;
+
+    // 3️⃣ Insert the RoomRequest with the correct studentId
     await query(
-      'INSERT INTO RoomRequests (studentId, roomId, status, requestDate) VALUES (?, ?, ?, ?)',
-      [studentId, roomId, 'PENDING', requestDate]
-    )
+      'INSERT INTO RoomRequests (studentId, roomId, status) VALUES (?, ?, "PENDING")',
+      [studentId, roomId]
+    );
 
-    res.json({ message: 'Request sent to admin' })
-
+    res.json({ success: true, message: 'Room request submitted' });
   } catch (err) {
-    console.error('Apply room error:', err)
-    res.status(500).json({ message: 'Internal server error' })
+    console.error(err);
+    res.status(500).json({ error: 'Something went wrong' });
   }
-})
+});
 // Complaints (using Maintenance table)
 app.get('/api/complaints', async (req, res) => {
   try {
