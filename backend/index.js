@@ -3,7 +3,7 @@ import cors from 'cors';
 import sql from 'msnodesqlv8';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 
 const connectionString = 'Driver={SQL Server};Server=.\\SQLEXPRESS;Database=HostelManagement;Trusted_Connection=yes;';
 
@@ -31,13 +31,36 @@ async function connectDB() {
 }
 
 // Simple query helper
-async function query(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    conn.query(sql, params, (err, result) => {
-      if (err) reject(err);
-      else resolve(result);
-    });
-  });
+async function query(sqlText, params = []) {
+  if (!conn) {
+    const connected = await connectDB();
+    if (!connected) throw new Error('Database not connected');
+  }
+
+  let attempt = 0;
+  while (attempt < 2) {
+    attempt += 1;
+    try {
+      const result = await new Promise((resolve, reject) => {
+        conn.query(sqlText, params, (err, result) => {
+          if (err) reject(err);
+          else resolve(result);
+        });
+      });
+      return result;
+    } catch (err) {
+      const message = String(err.message || err);
+      if (attempt === 1 && /communication link failure|general network error/i.test(message)) {
+        console.warn('Database network issue, reconnecting and retrying query:', message);
+        conn = null;
+        const reconnected = await connectDB();
+        if (!reconnected) throw err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Failed to execute query after retries');
 }
 
 // Auth endpoints
@@ -180,30 +203,24 @@ app.post('/api/rooms', async (req, res) => {
 });
 
 app.post('/api/rooms/:id/apply', async (req, res) => {
+  console.log('NEW APPLY API HIT')
   try {
-    const roomId = Number(req.params.id);
-    const auth = req.headers.authorization || '';
-    const token = auth.replace('Bearer ', '');
-    
-    // Get current user (for demo, assume student id is 1, in real app decode token)
-    const studentId = 1; // This should come from decoded token
-    
-    // Check if room is available
-    const roomCheck = await query('SELECT * FROM Rooms WHERE id = ? AND status = ?', [roomId, 'AVAILABLE']);
-    if (!roomCheck || roomCheck.length === 0) {
-      return res.status(400).json({ message: 'Room is not available' });
-    }
-    
-    // Update room to occupied and assign to student
-    await query('UPDATE Rooms SET status = ?, studentId = ? WHERE id = ?', ['OCCUPIED', studentId, roomId]);
-    
-    res.json({ message: 'Room applied successfully' });
-  } catch (err) {
-    console.error('Apply room error:', err);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
+    const roomId = Number(req.params.id)
+    const studentId = 1
+    const requestDate = new Date().toISOString()
 
+    await query(
+      'INSERT INTO RoomRequests (studentId, roomId, status, requestDate) VALUES (?, ?, ?, ?)',
+      [studentId, roomId, 'PENDING', requestDate]
+    )
+
+    res.json({ message: 'Request sent to admin' })
+
+  } catch (err) {
+    console.error('Apply room error:', err)
+    res.status(500).json({ message: 'Internal server error' })
+  }
+})
 // Complaints (using Maintenance table)
 app.get('/api/complaints', async (req, res) => {
   try {
@@ -305,33 +322,24 @@ app.get('/api/room-requests', async (req, res) => {
 ========================= */
 
 app.put('/api/room-requests/:id/approve', async (req, res) => {
-  try {
-    const requestId = Number(req.params.id);
+  const requestId = Number(req.params.id)
 
-    const request = await query(
-      'SELECT * FROM RoomRequests WHERE id = ?',
-      [requestId]
-    );
+  const request = await query(
+    'SELECT * FROM RoomRequests WHERE id = ?',
+    [requestId]
+  )
 
-    const { studentId, roomId } = request[0];
+  const { studentId, roomId } = request[0]
 
-    await query(
-      'UPDATE RoomRequests SET status = ? WHERE id = ?',
-      ['APPROVED', requestId]
-    );
+  await query(
+    'UPDATE RoomRequests SET status = ? WHERE id = ?',
+    ['APPROVED', requestId]
+  )
 
-    await query(
-      'UPDATE Rooms SET status = ?, studentId = ? WHERE id = ?',
-      ['OCCUPIED', studentId, roomId]
-    );
+  
 
-    res.json({ message: 'Room approved successfully' });
-
-  } catch (err) {
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
+  res.json({ message: 'Approved successfully' })
+})
 
 
 
