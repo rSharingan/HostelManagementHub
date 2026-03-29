@@ -25,3 +25,8 @@ export const updateAllocationAPI = async (id, allocation) => {
 export const deleteAllocationAPI = async (id) => {
   await axios.delete(API_ENDPOINTS.ALLOCATIONS.DELETE(id))
 }
+
+export const getAllocationSummaryAPI = async () => {
+  const { data } = await axios.get(API_ENDPOINTS.ALLOCATIONS.SUMMARY)
+  return data
+}

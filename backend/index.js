@@ -5,7 +5,7 @@ import sql from 'msnodesqlv8';
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-const connectionString = 'Driver={SQL Server};Server=Rabbie\\SQLEXPRESS;Database=HostelManagement;Trusted_Connection=yes;';
+const connectionString = 'Driver={SQL Server};Server=.\\SQLEXPRESS;Database=HostelManagement;Trusted_Connection=yes;';
 
 app.use(cors());
 app.use(express.json());
@@ -88,15 +88,19 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.get('/api/me', async (req, res) => {
   try {
-    const auth = req.headers.authorization || '';
-    const token = auth.replace('Bearer ', '');
-    res.json({ id: 1, name: 'Admin', email: 'admin@hostel.com', role: 'ADMIN' });
-  } catch (err) {
-    console.error('Me error:', err);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
+    const auth = req.headers.authorization || ''
+    const token = auth.replace('Bearer ', '')
 
+    if (!token) {
+      return res.status(401).json({ message: 'Unauthorized' })
+    }
+
+    // For now just confirm token exists
+    res.json({ message: 'Authenticated' })
+  } catch (err) {
+    res.status(500).json({ message: 'Internal server error' })
+  }
+})
 // Students CRUD
 app.get('/api/students', async (req, res) => {
   try {
@@ -259,6 +263,18 @@ app.get('/api/users', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Get users error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Allocations Summary
+app.get('/api/allocations/summary', async (req, res) => {
+  try {
+    const available = await query("SELECT TOP 5 * FROM Rooms WHERE status = 'AVAILABLE'");
+    const booked = await query("SELECT TOP 5 * FROM Rooms WHERE status = 'OCCUPIED'");
+    res.json({ available, booked });
+  } catch (err) {
+    console.error('Get allocations summary error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
