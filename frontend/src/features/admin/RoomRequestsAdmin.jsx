@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { PageHeader } from '../../components/common/PageHeader'
 import { Card, CardContent, CardHeader } from '../../components/ui/Card'
+import axios from '../../lib/api/axios'
 
 export const RoomRequestsAdmin = () => {
   const [requests, setRequests] = useState([])
@@ -16,14 +17,13 @@ export const RoomRequestsAdmin = () => {
   const fetchRequests = async () => {
     try {
       setLoading(true)
-      const res = await fetch('http://localhost:5000/api/room-requests')
-      if (!res.ok) throw new Error('Failed to fetch requests')
-      const data = await res.json()
+      const { data } = await axios.get('/room-requests')
       setRequests(data)
       setError(null)
     } catch (err) {
-      setError(err.message)
-      alert('Error fetching room requests: ' + err.message)
+      const message = err?.response?.data?.message || err.message
+      setError(message)
+      alert('Error fetching room requests: ' + message)
     } finally {
       setLoading(false)
     }
@@ -34,11 +34,7 @@ export const RoomRequestsAdmin = () => {
 
     try {
       setApprovingId(requestId)
-      const res = await fetch(`http://localhost:5000/api/room-requests/${requestId}/approve`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json' }
-      })
-      if (!res.ok) throw new Error('Failed to approve request')
+      await axios.put(`/room-requests/${requestId}/approve`)
       
       // Update local state
       setRequests(requests.map(req => 
@@ -46,7 +42,8 @@ export const RoomRequestsAdmin = () => {
       ))
       alert('Request approved successfully')
     } catch (err) {
-      alert('Error: ' + err.message)
+      const message = err?.response?.data?.message || err.message
+      alert('Error: ' + message)
     } finally {
       setApprovingId(null)
     }

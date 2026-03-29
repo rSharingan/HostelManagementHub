@@ -52,7 +52,7 @@ backend-nextjs/
 
 **Alternative - Docker:**
 ```bash
-docker run -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=Password123!" -p 1433:1433 -d mcr.microsoft.com/mssql/server:latest
+docker run -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=<YOUR_STRONG_PASSWORD>" -p 1433:1433 -d mcr.microsoft.com/mssql/server:latest
 ```
 
 ### 2. Create Database
@@ -80,7 +80,7 @@ Edit `.env.local` with your MSSQL credentials:
 ```
 DB_SERVER=localhost
 DB_USER=sa
-DB_PASSWORD=Password123!
+DB_PASSWORD=<YOUR_STRONG_PASSWORD>
 DB_NAME=HostelManagement
 ```
 

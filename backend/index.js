@@ -1,14 +1,77 @@
 import express from 'express';
 import cors from 'cors';
 import sql from 'msnodesqlv8';
+import 'dotenv/config';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-const connectionString = 'Driver={SQL Server};Server=.\\SQLEXPRESS;Database=HostelManagement;Trusted_Connection=yes;';
+function getConnectionString() {
+  const server = process.env.DB_SERVER || '.\\SQLEXPRESS';
+  const database = process.env.DB_NAME || 'HostelManagement';
+  const user = process.env.DB_USER;
+  const password = process.env.DB_PASSWORD;
+  const useTrusted = String(process.env.DB_TRUSTED_CONNECTION || 'true').toLowerCase() !== 'false';
+
+  if (useTrusted) {
+    return `Driver={SQL Server};Server=${server};Database=${database};Trusted_Connection=yes;TrustServerCertificate=yes;`;
+  }
+
+  if (!useTrusted && user && password) {
+    return `Driver={SQL Server};Server=${server};Database=${database};Uid=${user};Pwd=${password};TrustServerCertificate=yes;`;
+  }
+
+  const databaseUrl = process.env.DATABASE_URL;
+  if (databaseUrl && databaseUrl.startsWith('sqlserver://')) {
+    // Accept Prisma-style SQL Server URL to avoid duplicate env configuration.
+    const withoutProtocol = databaseUrl.slice('sqlserver://'.length);
+    const [authHostPart, queryPart = ''] = withoutProtocol.split(';', 2);
+    const atIndex = authHostPart.lastIndexOf('@');
+
+    if (atIndex > -1) {
+      const authPart = authHostPart.slice(0, atIndex);
+      const hostPart = authHostPart.slice(atIndex + 1);
+      const [urlUser, urlPassword = ''] = authPart.split(':');
+      const [urlServer = 'localhost'] = hostPart.split(':');
+
+      const dbMatch = /database=([^;]+)/i.exec(queryPart);
+      const trustMatch = /trustServerCertificate=([^;]+)/i.exec(queryPart);
+      const urlDatabase = dbMatch ? dbMatch[1] : 'HostelManagement';
+      const trustServerCertificate = trustMatch ? trustMatch[1] : 'yes';
+
+      if (urlUser) {
+        return `Driver={SQL Server};Server=${urlServer};Database=${urlDatabase};Uid=${urlUser};Pwd=${urlPassword};TrustServerCertificate=${trustServerCertificate};`;
+      }
+    }
+  }
+
+  return `Driver={SQL Server};Server=${server};Database=${database};Trusted_Connection=yes;TrustServerCertificate=yes;`;
+}
+
+const connectionString = getConnectionString();
+
+function createDevToken(user) {
+  return Buffer.from(JSON.stringify(user), 'utf8').toString('base64url');
+}
+
+function parseDevToken(token) {
+  try {
+    const payload = Buffer.from(token, 'base64url').toString('utf8');
+    return JSON.parse(payload);
+  } catch {
+    return null;
+  }
+}
 
 app.use(cors());
 app.use(express.json());
+
+app.use((req, _res, next) => {
+  const auth = req.headers.authorization || '';
+  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  req.user = token ? parseDevToken(token) : null;
+  next();
+});
 
 // Database connection
 let conn;
@@ -28,6 +91,109 @@ async function connectDB() {
     console.error('✗ Database connection failed:', err.message);
     return false;
   }
+}
+
+async function ensureSchema() {
+  await query(`
+    IF OBJECT_ID('dbo.Users', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Users (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        name NVARCHAR(255) NOT NULL,
+        email NVARCHAR(255) NOT NULL UNIQUE,
+        password NVARCHAR(255) NOT NULL,
+        role NVARCHAR(50) NOT NULL CHECK (role IN ('ADMIN', 'WARDEN', 'ACCOUNTANT', 'CARETAKER', 'STUDENT'))
+      )
+    END
+  `);
+
+  await query(`
+    IF OBJECT_ID('dbo.Students', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Students (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        name NVARCHAR(255) NOT NULL,
+        email NVARCHAR(255) NOT NULL,
+        phone NVARCHAR(20) NULL,
+        registrationNumber NVARCHAR(50) NULL,
+        department NVARCHAR(100) NULL,
+        yearOfStudy INT NOT NULL DEFAULT 1,
+        status NVARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+        password NVARCHAR(255) NOT NULL
+      )
+    END
+  `);
+
+  await query(`
+    IF OBJECT_ID('dbo.Rooms', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Rooms (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        roomNumber NVARCHAR(50) NOT NULL,
+        block NVARCHAR(20) NOT NULL,
+        floor INT NOT NULL,
+        capacity INT NOT NULL,
+        type NVARCHAR(50) NOT NULL,
+        rentalCost DECIMAL(10,2) NOT NULL,
+        status NVARCHAR(50) NOT NULL DEFAULT 'AVAILABLE',
+        studentId INT NULL,
+        CONSTRAINT FK_Rooms_Students FOREIGN KEY (studentId) REFERENCES dbo.Students(id)
+      )
+    END
+  `);
+
+  await query(`
+    IF OBJECT_ID('dbo.Maintenance', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Maintenance (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        description NVARCHAR(MAX) NOT NULL,
+        room NVARCHAR(50) NULL,
+        priority NVARCHAR(50) NOT NULL DEFAULT 'MEDIUM',
+        status NVARCHAR(50) NOT NULL DEFAULT 'PENDING',
+        reportedDate DATETIME2 NOT NULL,
+        assignedTo INT NULL
+      )
+    END
+  `);
+
+  await query(`
+    IF OBJECT_ID('dbo.Payments', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Payments (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        invoiceId INT NULL,
+        studentId INT NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        paymentDate DATETIME2 NOT NULL,
+        method NVARCHAR(50) NOT NULL DEFAULT 'CASH',
+        reference NVARCHAR(100) NULL
+      )
+    END
+  `);
+
+  await query(`
+    IF OBJECT_ID('dbo.RoomRequests', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.RoomRequests (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        studentId INT NOT NULL,
+        roomId INT NOT NULL,
+        status NVARCHAR(50) NOT NULL DEFAULT 'PENDING',
+        requestDate DATETIME2 NOT NULL,
+        CONSTRAINT FK_RoomRequests_Students FOREIGN KEY (studentId) REFERENCES dbo.Students(id),
+        CONSTRAINT FK_RoomRequests_Rooms FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)
+      )
+    END
+  `);
+
+  await query(`
+    IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE email = ?)
+    BEGIN
+      INSERT INTO dbo.Users (name, email, password, role)
+      VALUES (?, ?, ?, ?)
+    END
+  `, ['admin@hostel.com', 'Admin', 'admin@hostel.com', 'password', 'ADMIN']);
 }
 
 // Simple query helper
@@ -85,7 +251,10 @@ app.post('/api/auth/signup', async (req, res) => {
       );
     }
 
-    res.status(201).json({ token: `token-${Date.now()}`, user: { name, email, role } });
+    const users = await query('SELECT TOP 1 id, name, email, role FROM Users WHERE email = ?', [email]);
+    const user = users[0];
+    const token = createDevToken({ id: user.id, name: user.name, email: user.email, role: user.role });
+    res.status(201).json({ token, user });
   } catch (err) {
     console.error('Signup error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -101,29 +270,40 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    const user = users[0];
-    return res.json({ token: `token-${user.id}-${Date.now()}`, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    const user = { id: users[0].id, name: users[0].name, email: users[0].email, role: users[0].role };
+    const token = createDevToken(user);
+    return res.json({ token, user });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
 
+app.post('/api/auth/logout', (_req, res) => {
+  res.json({ message: 'Logged out' });
+});
+
 app.get('/api/me', async (req, res) => {
   try {
-    const auth = req.headers.authorization || ''
-    const token = auth.replace('Bearer ', '')
-
-    if (!token) {
-      return res.status(401).json({ message: 'Unauthorized' })
+    if (!req.user) {
+      return res.status(401).json({ message: 'Unauthorized' });
     }
 
-    // For now just confirm token exists
-    res.json({ message: 'Authenticated' })
+    res.json(req.user);
   } catch (err) {
-    res.status(500).json({ message: 'Internal server error' })
+    res.status(500).json({ message: 'Internal server error' });
   }
-})
+});
+
+app.get('/api/health/db', async (_req, res) => {
+  try {
+    await query('SELECT 1 as ok');
+    res.json({ ok: true, message: 'Database connected' });
+  } catch (err) {
+    res.status(500).json({ ok: false, message: err.message || 'Database not connected' });
+  }
+});
+
 // Students CRUD
 app.get('/api/students', async (req, res) => {
   try {
@@ -165,11 +345,7 @@ app.post('/api/students', async (req, res) => {
 // Rooms CRUD
 app.get('/api/rooms', async (req, res) => {
   try {
-    const auth = req.headers.authorization || '';
-    const token = auth.replace('Bearer ', '');
-    // For now, assume token contains user info, but we'll use a simple check
-    // In a real app, you'd decode the JWT token to get user info
-    const isAdmin = token.includes('ADMIN'); // Simple check for demo
+    const isAdmin = req.user?.role === 'ADMIN';
     
     let queryStr = 'SELECT * FROM Rooms';
     let params = [];
@@ -204,33 +380,50 @@ app.post('/api/rooms', async (req, res) => {
 
 app.post('/api/rooms/:id/apply', async (req, res) => {
   try {
-    const roomId = req.params.id;
+    if (!req.user?.email) {
+      return res.status(401).json({ message: 'Unauthorized' });
+    }
 
-    // 1️⃣ Get logged-in user info (assuming you have req.user from auth middleware)
-    const userEmail = req.user.email; // or however your auth stores logged-in user
+    const roomId = Number(req.params.id);
+    if (!Number.isInteger(roomId) || roomId <= 0) {
+      return res.status(400).json({ message: 'Invalid room id' });
+    }
 
-    // 2️⃣ Get the correct student ID from the Students table
-    const students = await query(
-      'SELECT id FROM Students WHERE email = ?',
-      [userEmail]
-    );
+    const room = await query('SELECT id, status FROM Rooms WHERE id = ?', [roomId]);
+    if (!room || room.length === 0) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
 
-    if (students.length === 0) {
-      return res.status(404).json({ error: 'Student not found' });
+    if (room[0].status !== 'AVAILABLE') {
+      return res.status(400).json({ message: 'Room is not available' });
+    }
+
+    const students = await query('SELECT id FROM Students WHERE email = ?', [req.user.email]);
+
+    if (!students || students.length === 0) {
+      return res.status(404).json({ message: 'Student not found' });
     }
 
     const studentId = students[0].id;
 
-    // 3️⃣ Insert the RoomRequest with the correct studentId
-    await query(
-      'INSERT INTO RoomRequests (studentId, roomId, status) VALUES (?, ?, "PENDING")',
-      [studentId, roomId]
+    const existingRequest = await query(
+      'SELECT TOP 1 id FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status = ?',
+      [studentId, roomId, 'PENDING']
     );
 
-    res.json({ success: true, message: 'Room request submitted' });
+    if (existingRequest && existingRequest.length > 0) {
+      return res.status(409).json({ message: 'You already have a pending request for this room' });
+    }
+
+    await query(
+      'INSERT INTO RoomRequests (studentId, roomId, status, requestDate) VALUES (?, ?, ?, ?)',
+      [studentId, roomId, 'PENDING', new Date().toISOString()]
+    );
+
+    res.status(201).json({ message: 'Room request submitted' });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Something went wrong' });
+    console.error('Apply room error:', err);
+    res.status(500).json({ message: 'Internal server error' });
   }
 });
 // Complaints (using Maintenance table)
@@ -334,24 +527,31 @@ app.get('/api/room-requests', async (req, res) => {
 ========================= */
 
 app.put('/api/room-requests/:id/approve', async (req, res) => {
-  const requestId = Number(req.params.id)
+  try {
+    const requestId = Number(req.params.id);
+    if (!Number.isInteger(requestId) || requestId <= 0) {
+      return res.status(400).json({ message: 'Invalid request id' });
+    }
 
-  const request = await query(
-    'SELECT * FROM RoomRequests WHERE id = ?',
-    [requestId]
-  )
+    const request = await query('SELECT * FROM RoomRequests WHERE id = ?', [requestId]);
+    if (!request || request.length === 0) {
+      return res.status(404).json({ message: 'Request not found' });
+    }
 
-  const { studentId, roomId } = request[0]
+    const { studentId, roomId, status } = request[0];
+    if (status !== 'PENDING') {
+      return res.status(400).json({ message: `Cannot approve request in ${status} state` });
+    }
 
-  await query(
-    'UPDATE RoomRequests SET status = ? WHERE id = ?',
-    ['APPROVED', requestId]
-  )
+    await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['APPROVED', requestId]);
+    await query('UPDATE Rooms SET status = ?, studentId = ? WHERE id = ?', ['OCCUPIED', studentId, roomId]);
 
-  
-
-  res.json({ message: 'Approved successfully' })
-})
+    res.json({ message: 'Approved successfully' });
+  } catch (err) {
+    console.error('Approve room request error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
 
 
 
@@ -360,6 +560,14 @@ async function startServer() {
   const connected = await connectDB();
   if (!connected) {
     console.error('Failed to connect to database. Exiting...');
+    process.exit(1);
+  }
+
+  try {
+    await ensureSchema();
+    console.log('✓ Database schema verified');
+  } catch (err) {
+    console.error('✗ Database schema initialization failed:', err.message || err);
     process.exit(1);
   }
 

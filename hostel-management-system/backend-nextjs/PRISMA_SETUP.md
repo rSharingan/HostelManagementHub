@@ -22,7 +22,7 @@ SqlLocalDB info
 
 **Option C: Docker (Easiest)**
 ```powershell
-docker run -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=Password123!" `
+docker run -e "ACCEPT_EULA=Y" -e "SA_PASSWORD=<YOUR_STRONG_PASSWORD>" `
   -p 1433:1433 -d mcr.microsoft.com/mssql/server:latest
 ```
 

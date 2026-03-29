@@ -1,0 +1,12 @@
+// This is your Prisma schema file,
+// learn more in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "sqlserver"  // <- changed from postgresql
+  url      = env("DATABASE_URL")
+}

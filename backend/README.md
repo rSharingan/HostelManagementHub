@@ -1,63 +1,138 @@
-# Hostel Management System Backend
+# Hostel Management Backend (Express + MS SQL Server)
 
-This is the backend API for the Hostel Management System, built with Express.js and MS SQL Server.
+This backend is connected to **MS SQL Server** using `msnodesqlv8`.
 
-## Setup
+## 1. Prerequisites (Windows)
 
-1. **Install Dependencies:**
-   ```bash
-   npm install
-   ```
+1. Install **Node.js 18+**.
+2. Install **Microsoft SQL Server** (Developer or Express).
+3. Install **SQL Server Management Studio (SSMS)** (recommended).
+4. During SQL Server setup, ensure you know:
+   - Instance name (for example `SQLEXPRESS`)
+   - Auth mode (Windows auth or SQL auth)
 
-2. **Database Setup:**
-   - Make sure you have MS SQL Server installed and running
-   - Run the `database-setup.sql` script in your MS SQL Server to create the database and tables
-   - Update the database configuration in `index.js` with your MS SQL Server credentials
+## 2. Create Database and Tables
 
-3. **Environment Variables (Optional):**
-   You can set the following environment variables:
-   - `DB_USER`: Database username
-   - `DB_PASSWORD`: Database password
-   - `DB_SERVER`: Database server (default: localhost)
-   - `DB_NAME`: Database name (default: HostelManagement)
-   - `PORT`: Server port (default: 3000)
+1. Open SSMS and connect to your SQL Server instance.
+2. Open and run `database-setup.sql` from this folder.
+3. Confirm these tables exist:
+   - `Users`
+   - `Students`
+   - `Rooms`
+   - `Maintenance`
+   - `Payments`
+   - `RoomRequests`
 
-4. **Start the Server:**
-   ```bash
-   npm start
-   ```
+## 3. Configure Backend Connection
 
-The server will start on http://localhost:3000
+The backend reads these environment variables:
 
-## API Endpoints
+- `PORT` (default: `5000`)
+- `DB_SERVER` (default: `.\\SQLEXPRESS`)
+- `DB_NAME` (default: `HostelManagement`)
+- `DB_TRUSTED_CONNECTION` (default: `true`)
+- `DB_USER` (required only if `DB_TRUSTED_CONNECTION=false`)
+- `DB_PASSWORD` (required only if `DB_TRUSTED_CONNECTION=false`)
 
-### Authentication
-- `POST /api/auth/signup` - User registration
-- `POST /api/auth/login` - User login
-- `GET /api/me` - Get current user info
+### Docker Runtime (recommended when backend runs in container)
 
-### Students
-- `GET /api/students` - Get all students (with optional search query)
-- `GET /api/students/:id` - Get student by ID
-- `POST /api/students` - Create new student
-- `PUT /api/students/:id` - Update student
-- `DELETE /api/students/:id` - Delete student
+Use SQL login auth from container to SQL Server host:
 
-### Rooms
-- `GET /api/rooms` - Get all rooms
-- `GET /api/rooms/:id` - Get room by ID
-- `POST /api/rooms` - Create new room
-- `PUT /api/rooms/:id` - Update room
-- `DELETE /api/rooms/:id` - Delete room
+- `DB_SERVER=host.docker.internal`
+- `DB_NAME=HostelManagement`
+- `DB_TRUSTED_CONNECTION=false`
+- `DB_USER=sa`
+- `DB_PASSWORD=<your-password>`
 
-### Complaints
-- `GET /api/complaints` - Get all complaints
-- `POST /api/complaints` - Create new complaint
-- `PUT /api/complaints/:id` - Update complaint
+Why: Windows Trusted Connection usually fails from inside containers.
 
-### Payments
-- `GET /api/payments` - Get all payments
-- `POST /api/payments` - Create new payment
+### Option A: Windows Authentication (recommended on local Windows)
 
-### Users
-- `GET /api/users` - Get all users (except admin)
+PowerShell example:
+
+```powershell
+$env:DB_SERVER = '.\SQLEXPRESS'
+$env:DB_NAME = 'HostelManagement'
+$env:DB_TRUSTED_CONNECTION = 'true'
+```
+
+### Option B: SQL Login Authentication
+
+PowerShell example:
+
+```powershell
+$env:DB_SERVER = '.\SQLEXPRESS'
+$env:DB_NAME = 'HostelManagement'
+$env:DB_TRUSTED_CONNECTION = 'false'
+$env:DB_USER = 'sa'
+$env:DB_PASSWORD = 'yourStrongPasswordHere'
+```
+
+## 4. Install and Run
+
+```powershell
+npm.cmd install
+npm.cmd run dev
+```
+
+Notes:
+- Use `npm.cmd` on this machine to avoid PowerShell script policy issues.
+- Backend base URL: `http://localhost:5000/api`
+
+## 5. Verify DB Connectivity
+
+After server starts, test:
+
+- `GET http://localhost:5000/api/health/db`
+
+Expected:
+
+```json
+{ "ok": true, "message": "Database connected" }
+```
+
+## 5.1 Auto Table Creation
+
+On backend startup, schema creation runs automatically and creates these tables if missing:
+
+- `Users`
+- `Students`
+- `Rooms`
+- `Maintenance`
+- `Payments`
+- `RoomRequests`
+
+If startup reaches `Database schema verified`, table setup succeeded.
+
+## 6. Frontend Integration
+
+Frontend should point to:
+
+- `VITE_API_BASE_URL=http://localhost:5000/api`
+
+In this workspace, frontend constants already default to that URL.
+
+## 7. Common Issues
+
+1. Login works but protected routes fail:
+   - Make sure frontend sends `Authorization: Bearer <token>`.
+2. `Database connection failed`:
+   - Verify SQL Server service is running.
+   - Verify `DB_SERVER` instance name (for example `.\SQLEXPRESS`, `localhost`, or `MACHINE\\SQLEXPRESS`).
+3. `Cannot open database`:
+   - Confirm `HostelManagement` DB exists.
+4. Native driver issues:
+   - Re-run `npm.cmd install` in this backend folder.
+
+## 8. Key API Endpoints
+
+- `POST /api/auth/signup`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
+- `GET /api/me`
+- `GET /api/health/db`
+- `GET /api/students`
+- `GET /api/rooms`
+- `POST /api/rooms/:id/apply`
+- `GET /api/room-requests`
+- `PUT /api/room-requests/:id/approve`
