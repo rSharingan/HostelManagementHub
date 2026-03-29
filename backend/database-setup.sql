@@ -65,6 +65,17 @@ CREATE TABLE Payments (
     reference VARCHAR(100)
 );
 
+-- RoomRequests table (for student room applications)
+CREATE TABLE RoomRequests (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    studentId INT NOT NULL,
+    roomId INT NOT NULL,
+    status VARCHAR(50) DEFAULT 'PENDING' CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED')),
+    requestDate DATETIME NOT NULL,
+    FOREIGN KEY (studentId) REFERENCES Students(id),
+    FOREIGN KEY (roomId) REFERENCES Rooms(id)
+);
+
 -- Insert default admin user
 INSERT INTO Users (name, email, password, role) VALUES ('Admin', 'admin@hostel.com', 'password', 'ADMIN');
 
