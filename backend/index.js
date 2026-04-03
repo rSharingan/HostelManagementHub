@@ -576,19 +576,68 @@ app.get('/api/users', async (req, res) => {
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+/* =========================
+   ADMIN VIEW REQUESTS
+========================= */
+
+app.get('/api/room-requests', async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT rr.id, rr.status,
+             s.name AS studentName,
+             r.roomNumber
+      FROM RoomRequests rr
+      JOIN Students s ON rr.studentId = s.id
+      JOIN Rooms r ON rr.roomId = r.id
+    `);
+
+    res.json(result);
+
+  } catch (err) {
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+/* =========================
+   ADMIN APPROVE REQUEST
+========================= */
+
+app.put('/api/room-requests/:id/approve', async (req, res) => {
+  const requestId = Number(req.params.id)
+
+  const request = await query(
+    'SELECT * FROM RoomRequests WHERE id = ?',
+    [requestId]
+  )
+
+  const { studentId, roomId } = request[0]
+
+  await query(
+    'UPDATE RoomRequests SET status = ? WHERE id = ?',
+    ['APPROVED', requestId]
+  )
+
+  
+
+  res.json({ message: 'Approved successfully' })
+})
+
+app.get('/api/reports/occupancy', async (req, res) => {
+  try {
+    const result = await query('SELECT * FROM OccupancyReport');
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching report' });
+  }
+});
+
+
 
 // Start server
 async function startServer() {
   const connected = await connectDB();
   if (!connected) {
     console.error('Failed to connect to database. Exiting...');
-    process.exit(1);
-  }
-
-  try {
-    await ensureFeatureTables();
-  } catch (err) {
-    console.error('Failed to prepare feature tables:', err.message);
     process.exit(1);
   }
 
