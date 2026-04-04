@@ -1,11 +1,30 @@
 import express from 'express';
 import cors from 'cors';
 import sql from 'msnodesqlv8';
+import 'dotenv/config';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
 
-const connectionString = 'Driver={SQL Server};Server=.\\SQLEXPRESS;Database=HostelManagement;Trusted_Connection=yes;';
+function getConnectionString() {
+  const server = process.env.DB_SERVER || 'localhost';
+  const database = process.env.DB_NAME || 'HostelManagement';
+  const user = process.env.DB_USER;
+  const password = process.env.DB_PASSWORD;
+  const useTrusted = String(process.env.DB_TRUSTED_CONNECTION || 'false').toLowerCase() === 'true';
+
+  if (useTrusted) {
+    return `Driver={SQL Server};Server=${server};Database=${database};Trusted_Connection=yes;TrustServerCertificate=yes;`;
+  }
+
+  if (user && password) {
+    return `Driver={SQL Server};Server=${server};Database=${database};Uid=${user};Pwd=${password};TrustServerCertificate=yes;`;
+  }
+
+  return `Driver={SQL Server};Server=${server};Database=${database};Trusted_Connection=yes;TrustServerCertificate=yes;`;
+}
+
+const connectionString = getConnectionString();
 
 app.use(cors());
 app.use(express.json());
@@ -61,6 +80,44 @@ async function query(sqlText, params = []) {
     }
   }
   throw new Error('Failed to execute query after retries');
+}
+
+async function ensureFeatureTables() {
+  await query(`
+    IF OBJECT_ID('dbo.Users', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Users (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        name NVARCHAR(255) NOT NULL,
+        email NVARCHAR(255) NOT NULL UNIQUE,
+        password NVARCHAR(255) NOT NULL,
+        role NVARCHAR(50) NOT NULL CHECK (role IN ('ADMIN', 'WARDEN', 'ACCOUNTANT', 'CARETAKER', 'STUDENT'))
+      )
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.Invoices', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Invoices (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        studentId INT NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        dueDate DATETIME2 NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        description VARCHAR(255) NULL
+      )
+    END
+  `)
+
+  await query(
+    `IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE email = ?)
+     BEGIN
+       INSERT INTO dbo.Users (name, email, password, role)
+       VALUES (?, ?, ?, ?)
+     END`,
+    ['admin@hostel.com', 'Admin', 'admin@hostel.com', 'password', 'ADMIN']
+  )
 }
 
 // Auth endpoints
@@ -121,9 +178,21 @@ app.get('/api/me', async (req, res) => {
     // For now just confirm token exists
     res.json({ message: 'Authenticated' })
   } catch (err) {
+    console.error('Me error:', err)
     res.status(500).json({ message: 'Internal server error' })
   }
 })
+
+app.get('/api/health/db', async (req, res) => {
+  try {
+    await query('SELECT 1 AS ok');
+    res.json({ ok: true, message: 'Database connected' });
+  } catch (err) {
+    console.error('Health check error:', err);
+    res.status(500).json({ ok: false, message: 'Database not connected' });
+  }
+});
+
 // Students CRUD
 app.get('/api/students', async (req, res) => {
   try {
@@ -259,6 +328,72 @@ app.post('/api/complaints', async (req, res) => {
   }
 });
 
+// Maintenance (module routes expected by frontend)
+app.get('/api/maintenance', async (req, res) => {
+  try {
+    const result = await query('SELECT * FROM Maintenance ORDER BY reportedDate DESC');
+    res.json(result);
+  } catch (err) {
+    console.error('Get maintenance error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/maintenance/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+    if (!result || result.length === 0) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+    res.json(result[0]);
+  } catch (err) {
+    console.error('Get maintenance detail error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.post('/api/maintenance', async (req, res) => {
+  try {
+    const payload = req.body;
+    const reportedDate = new Date().toISOString();
+    await query(
+      'INSERT INTO Maintenance (description, room, priority, status, reportedDate, assignedTo) VALUES (?, ?, ?, ?, ?, ?)',
+      [payload.description, payload.room || '', payload.priority || 'MEDIUM', payload.status || 'PENDING', reportedDate, payload.assignedTo || null]
+    );
+    res.status(201).json(payload);
+  } catch (err) {
+    console.error('Create maintenance error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/api/maintenance/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const payload = req.body;
+    await query(
+      'UPDATE Maintenance SET description = ?, room = ?, priority = ?, status = ?, assignedTo = ? WHERE id = ?',
+      [payload.description, payload.room || '', payload.priority || 'MEDIUM', payload.status || 'PENDING', payload.assignedTo || null, id]
+    );
+    res.json({ ...payload, id });
+  } catch (err) {
+    console.error('Update maintenance error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.delete('/api/maintenance/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await query('DELETE FROM Maintenance WHERE id = ?', [id]);
+    res.status(204).send();
+  } catch (err) {
+    console.error('Delete maintenance error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 // Payments
 app.get('/api/payments', async (req, res) => {
   try {
@@ -285,6 +420,187 @@ app.post('/api/payments', async (req, res) => {
   }
 });
 
+// Fees module routes expected by frontend
+app.get('/api/fees/invoices', async (req, res) => {
+  try {
+    const result = await query('SELECT * FROM Invoices ORDER BY dueDate DESC');
+    res.json(result);
+  } catch (err) {
+    console.error('Get invoices error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/fees/invoices/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await query('SELECT * FROM Invoices WHERE id = ?', [id]);
+    if (!result || result.length === 0) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+    res.json(result[0]);
+  } catch (err) {
+    console.error('Get invoice detail error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.post('/api/fees/invoices', async (req, res) => {
+  try {
+    const payload = req.body;
+    const dueDate = payload.dueDate || new Date().toISOString();
+    await query(
+      'INSERT INTO Invoices (studentId, amount, dueDate, status, description) VALUES (?, ?, ?, ?, ?)',
+      [payload.studentId, payload.amount, dueDate, payload.status || 'PENDING', payload.description || '']
+    );
+    res.status(201).json(payload);
+  } catch (err) {
+    console.error('Create invoice error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/api/fees/invoices/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const payload = req.body;
+    await query(
+      'UPDATE Invoices SET studentId = ?, amount = ?, dueDate = ?, status = ?, description = ? WHERE id = ?',
+      [payload.studentId, payload.amount, payload.dueDate, payload.status || 'PENDING', payload.description || '', id]
+    );
+    res.json({ ...payload, id });
+  } catch (err) {
+    console.error('Update invoice error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/fees/payments', async (req, res) => {
+  try {
+    const result = await query('SELECT * FROM Payments ORDER BY paymentDate DESC');
+    res.json(result);
+  } catch (err) {
+    console.error('Get fee payments error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/fees/payments/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await query('SELECT * FROM Payments WHERE id = ?', [id]);
+    if (!result || result.length === 0) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+    res.json(result[0]);
+  } catch (err) {
+    console.error('Get fee payment detail error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.post('/api/fees/payments', async (req, res) => {
+  try {
+    const payload = req.body;
+    const paymentDate = new Date().toISOString();
+    await query(
+      'INSERT INTO Payments (invoiceId, studentId, amount, paymentDate, method, reference) VALUES (?, ?, ?, ?, ?, ?)',
+      [payload.invoiceId || null, payload.studentId, payload.amount, paymentDate, payload.method || 'CASH', payload.reference || '']
+    );
+    res.status(201).json(payload);
+  } catch (err) {
+    console.error('Create fee payment error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/api/fees/payments/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const payload = req.body;
+    await query(
+      'UPDATE Payments SET invoiceId = ?, studentId = ?, amount = ?, method = ?, reference = ? WHERE id = ?',
+      [payload.invoiceId || null, payload.studentId, payload.amount, payload.method || 'CASH', payload.reference || '', id]
+    );
+    res.json({ ...payload, id });
+  } catch (err) {
+    console.error('Update fee payment error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Staff module routes expected by frontend
+app.get('/api/staff', async (req, res) => {
+  try {
+    const result = await query("SELECT id, name, email, role FROM Users WHERE role IN ('WARDEN', 'CARETAKER')");
+    res.json(result);
+  } catch (err) {
+    console.error('Get staff error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/staff/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await query('SELECT id, name, email, role FROM Users WHERE id = ?', [id]);
+    if (!result || result.length === 0) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+    res.json(result[0]);
+  } catch (err) {
+    console.error('Get staff member error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.post('/api/staff', async (req, res) => {
+  try {
+    const payload = req.body;
+    const role = payload.role === 'CARETAKER' ? 'CARETAKER' : 'WARDEN';
+    const existing = await query('SELECT id FROM Users WHERE email = ?', [payload.email]);
+    if (existing && existing.length > 0) {
+      return res.status(400).json({ message: 'User already exists with this email' });
+    }
+
+    await query(
+      'INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, ?)',
+      [payload.name, payload.email, payload.password || 'password', role]
+    );
+    res.status(201).json({ ...payload, role });
+  } catch (err) {
+    console.error('Create staff error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/api/staff/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const payload = req.body;
+    const role = payload.role === 'CARETAKER' ? 'CARETAKER' : 'WARDEN';
+    await query(
+      'UPDATE Users SET name = ?, email = ?, role = ? WHERE id = ?',
+      [payload.name, payload.email, role, id]
+    );
+    res.json({ ...payload, id, role });
+  } catch (err) {
+    console.error('Update staff error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.delete('/api/staff/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await query('DELETE FROM Users WHERE id = ?', [id]);
+    res.status(204).send();
+  } catch (err) {
+    console.error('Delete staff error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 // Users
 app.get('/api/users', async (req, res) => {
   try {
@@ -295,6 +611,62 @@ app.get('/api/users', async (req, res) => {
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+/* =========================
+   ADMIN VIEW REQUESTS
+========================= */
+
+app.get('/api/room-requests', async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT rr.id, rr.status,
+             s.name AS studentName,
+             r.roomNumber
+      FROM RoomRequests rr
+      JOIN Students s ON rr.studentId = s.id
+      JOIN Rooms r ON rr.roomId = r.id
+    `);
+
+    res.json(result);
+
+  } catch (err) {
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+/* =========================
+   ADMIN APPROVE REQUEST
+========================= */
+
+app.put('/api/room-requests/:id/approve', async (req, res) => {
+  const requestId = Number(req.params.id)
+
+  const request = await query(
+    'SELECT * FROM RoomRequests WHERE id = ?',
+    [requestId]
+  )
+
+  const { studentId, roomId } = request[0]
+
+  await query(
+    'UPDATE RoomRequests SET status = ? WHERE id = ?',
+    ['APPROVED', requestId]
+  )
+
+  
+
+  res.json({ message: 'Approved successfully' })
+})
+
+app.get('/api/reports/occupancy', async (req, res) => {
+  try {
+    const result = await query('SELECT * FROM OccupancyReport');
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ message: 'Error fetching report' });
+  }
+});
+
+
 
 // Allocations Summary
 app.get('/api/allocations/summary', async (req, res) => {
