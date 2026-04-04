@@ -12,6 +12,7 @@ import { StudentDetailsPage } from '../features/students/StudentDetailsPage'
 import { RoomsPage } from '../features/rooms/RoomsPage'
 import { RoomDetailsPage } from '../features/rooms/RoomDetailsPage'
 import { AllocationsPage } from '../features/allocations/AllocationsPage'
+import { RoomRequestsAdmin } from '../features/admin/RoomRequestsAdmin'
 import { InvoicesPage } from '../features/fees/InvoicesPage'
 import { PaymentsPage } from '../features/fees/PaymentsPage'
 import { StaffPage } from '../features/staff/StaffPage'
@@ -96,6 +97,16 @@ export const router = createBrowserRouter([
       <RequireAuth>
         <AppLayout>
           <AllocationsPage />
+        </AppLayout>
+      </RequireAuth>
+    ),
+  },
+  {
+    path: '/admin/room-requests',
+    element: (
+      <RequireAuth>
+        <AppLayout>
+          <RoomRequestsAdmin />
         </AppLayout>
       </RequireAuth>
     ),

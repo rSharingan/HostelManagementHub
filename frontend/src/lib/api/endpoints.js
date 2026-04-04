@@ -27,6 +27,7 @@ export const API_ENDPOINTS = {
     CREATE: '/allocations',
     UPDATE: (id) => `/allocations/${id}`,
     DELETE: (id) => `/allocations/${id}`,
+    SUMMARY: '/allocations/summary',
   },
   FEES: {
     INVOICES_LIST: '/fees/invoices',

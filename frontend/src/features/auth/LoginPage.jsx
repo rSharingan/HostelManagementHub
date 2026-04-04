@@ -14,20 +14,26 @@ export const LoginPage = () => {
   const { login } = useAuth()
   const navigate = useNavigate()
 
-  const handleSubmit = async (e) => {
-    e.preventDefault()
-    setError('')
-    setLoading(true)
+ const handleSubmit = async (e) => {
+  e.preventDefault()
+  setError('')
+  setLoading(true)
 
-    try {
-      await login(email, password)
+  try {
+    await login(email, password)
+
+    // small delay ensures state update
+    setTimeout(() => {
       navigate('/dashboard')
-    } catch (err) {
-      setError(err.response?.data?.message || 'Login failed')
-    } finally {
-      setLoading(false)
-    }
+    }, 100)
+
+  } catch (err) {
+    console.log(err) // ✅ debug
+    setError(err.response?.data?.message || 'Login failed')
+  } finally {
+    setLoading(false)
   }
+}
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-slate-950 dark:to-slate-900 flex items-center justify-center p-4">

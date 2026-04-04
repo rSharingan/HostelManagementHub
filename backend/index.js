@@ -50,13 +50,36 @@ async function connectDB() {
 }
 
 // Simple query helper
-async function query(sql, params = []) {
-  return new Promise((resolve, reject) => {
-    conn.query(sql, params, (err, result) => {
-      if (err) reject(err);
-      else resolve(result);
-    });
-  });
+async function query(sqlText, params = []) {
+  if (!conn) {
+    const connected = await connectDB();
+    if (!connected) throw new Error('Database not connected');
+  }
+
+  let attempt = 0;
+  while (attempt < 2) {
+    attempt += 1;
+    try {
+      const result = await new Promise((resolve, reject) => {
+        conn.query(sqlText, params, (err, result) => {
+          if (err) reject(err);
+          else resolve(result);
+        });
+      });
+      return result;
+    } catch (err) {
+      const message = String(err.message || err);
+      if (attempt === 1 && /communication link failure|general network error/i.test(message)) {
+        console.warn('Database network issue, reconnecting and retrying query:', message);
+        conn = null;
+        const reconnected = await connectDB();
+        if (!reconnected) throw err;
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw new Error('Failed to execute query after retries');
 }
 
 async function ensureFeatureTables() {
@@ -145,14 +168,20 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.get('/api/me', async (req, res) => {
   try {
-    const auth = req.headers.authorization || '';
-    const token = auth.replace('Bearer ', '');
-    res.json({ id: 1, name: 'Admin', email: 'admin@hostel.com', role: 'ADMIN' });
+    const auth = req.headers.authorization || ''
+    const token = auth.replace('Bearer ', '')
+
+    if (!token) {
+      return res.status(401).json({ message: 'Unauthorized' })
+    }
+
+    // For now just confirm token exists
+    res.json({ message: 'Authenticated' })
   } catch (err) {
-    console.error('Me error:', err);
-    res.status(500).json({ message: 'Internal server error' });
+    console.error('Me error:', err)
+    res.status(500).json({ message: 'Internal server error' })
   }
-});
+})
 
 app.get('/api/health/db', async (req, res) => {
   try {
@@ -244,29 +273,35 @@ app.post('/api/rooms', async (req, res) => {
 
 app.post('/api/rooms/:id/apply', async (req, res) => {
   try {
-    const roomId = Number(req.params.id);
-    const auth = req.headers.authorization || '';
-    const token = auth.replace('Bearer ', '');
-    
-    // Get current user (for demo, assume student id is 1, in real app decode token)
-    const studentId = 1; // This should come from decoded token
-    
-    // Check if room is available
-    const roomCheck = await query('SELECT * FROM Rooms WHERE id = ? AND status = ?', [roomId, 'AVAILABLE']);
-    if (!roomCheck || roomCheck.length === 0) {
-      return res.status(400).json({ message: 'Room is not available' });
+    const roomId = req.params.id;
+
+    // 1️⃣ Get logged-in user info (assuming you have req.user from auth middleware)
+    const userEmail = req.user.email; // or however your auth stores logged-in user
+
+    // 2️⃣ Get the correct student ID from the Students table
+    const students = await query(
+      'SELECT id FROM Students WHERE email = ?',
+      [userEmail]
+    );
+
+    if (students.length === 0) {
+      return res.status(404).json({ error: 'Student not found' });
     }
-    
-    // Update room to occupied and assign to student
-    await query('UPDATE Rooms SET status = ?, studentId = ? WHERE id = ?', ['OCCUPIED', studentId, roomId]);
-    
-    res.json({ message: 'Room applied successfully' });
+
+    const studentId = students[0].id;
+
+    // 3️⃣ Insert the RoomRequest with the correct studentId
+    await query(
+      'INSERT INTO RoomRequests (studentId, roomId, status) VALUES (?, ?, "PENDING")',
+      [studentId, roomId]
+    );
+
+    res.json({ success: true, message: 'Room request submitted' });
   } catch (err) {
-    console.error('Apply room error:', err);
-    res.status(500).json({ message: 'Internal server error' });
+    console.error(err);
+    res.status(500).json({ error: 'Something went wrong' });
   }
 });
-
 // Complaints (using Maintenance table)
 app.get('/api/complaints', async (req, res) => {
   try {
@@ -630,6 +665,65 @@ app.get('/api/reports/occupancy', async (req, res) => {
     res.status(500).json({ message: 'Error fetching report' });
   }
 });
+
+
+
+// Allocations Summary
+app.get('/api/allocations/summary', async (req, res) => {
+  try {
+    const available = await query("SELECT TOP 5 * FROM Rooms WHERE status = 'AVAILABLE'");
+    const booked = await query("SELECT TOP 5 * FROM Rooms WHERE status = 'OCCUPIED'");
+    res.json({ available, booked });
+  } catch (err) {
+    console.error('Get allocations summary error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+/* =========================
+   ADMIN VIEW REQUESTS
+========================= */
+
+app.get('/api/room-requests', async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT rr.id, rr.status,
+             s.name AS studentName,
+             r.roomNumber
+      FROM RoomRequests rr
+      JOIN Students s ON rr.studentId = s.id
+      JOIN Rooms r ON rr.roomId = r.id
+    `);
+
+    res.json(result);
+
+  } catch (err) {
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+/* =========================
+   ADMIN APPROVE REQUEST
+========================= */
+
+app.put('/api/room-requests/:id/approve', async (req, res) => {
+  const requestId = Number(req.params.id)
+
+  const request = await query(
+    'SELECT * FROM RoomRequests WHERE id = ?',
+    [requestId]
+  )
+
+  const { studentId, roomId } = request[0]
+
+  await query(
+    'UPDATE RoomRequests SET status = ? WHERE id = ?',
+    ['APPROVED', requestId]
+  )
+
+  
+
+  res.json({ message: 'Approved successfully' })
+})
 
 
 
