@@ -1,7 +1,7 @@
 // path: src/features/students/StudentDetailsPage.jsx
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
-import { useCreateStudent, useStudent, useUpdateStudent } from './hooks'
+import { useStudent, useUpdateStudent } from './hooks'
 import { StudentForm } from './StudentForm'
 import { Button } from '../../components/ui/Button'
 import { DetailPageSkeleton } from '../../components/common/Skeletons'
@@ -13,22 +13,19 @@ export const StudentDetailsPage = () => {
   const isNew = id === 'new'
 
   const { data: student, isLoading } = useStudent(id, !isNew)
-  const createStudent = useCreateStudent()
   const updateStudent = useUpdateStudent()
+
+  if (isNew) {
+    return null
+  }
 
   const handleSubmit = async (data) => {
     try {
-      if (isNew) {
-        await createStudent.mutateAsync(data)
-        toast.success('Student created successfully')
-      } else {
-        // Update existing student
-        await updateStudent.mutateAsync({
-          id,
-          data,
-        })
-        toast.success('Student updated successfully')
-      }
+      await updateStudent.mutateAsync({
+        id,
+        data,
+      })
+      toast.success('Student updated successfully')
       navigate('/students')
     } catch (error) {
       toast.error('Failed to save student')
@@ -57,7 +54,7 @@ export const StudentDetailsPage = () => {
       <StudentForm
         student={student}
         onSubmit={handleSubmit}
-        loading={isNew ? createStudent.isPending : updateStudent.isPending}
+        loading={updateStudent.isPending}
         onCancel={() => navigate('/students')}
       />
     </div>

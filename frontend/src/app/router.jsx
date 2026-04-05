@@ -1,5 +1,6 @@
 // path: src/app/router.jsx
 import { createBrowserRouter } from 'react-router-dom'
+import { Navigate } from 'react-router-dom'
 import { RequireAuth } from '../features/auth/RequireAuth'
 import { LoginPage } from '../features/auth/LoginPage'
 import { SignupPage } from '../features/auth/SignupPage'
@@ -71,6 +72,10 @@ export const router = createBrowserRouter([
         </AppLayout>
       </RequireAuth>
     ),
+  },
+  {
+    path: '/students/new',
+    element: <Navigate to="/students" replace />,
   },
   {
     path: '/rooms',

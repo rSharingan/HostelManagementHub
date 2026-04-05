@@ -1,7 +1,7 @@
 // path: src/features/students/StudentsPage.jsx
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Edit2 } from 'lucide-react'
+import { Trash2, Edit2 } from 'lucide-react'
 import { useStudents, useDeleteStudent } from './hooks'
 import { PageHeader } from '../../components/common/PageHeader'
 import { DataTable } from '../../components/common/DataTable'
@@ -94,15 +94,6 @@ export const StudentsPage = () => {
           { label: 'Dashboard', href: '/dashboard' },
           { label: 'Students' },
         ]}
-        action={
-          <Button
-            onClick={() => navigate('/students/new')}
-            className="gap-2"
-          >
-            <Plus size={16} />
-            Add Student
-          </Button>
-        }
       />
 
       {isLoading ? (
