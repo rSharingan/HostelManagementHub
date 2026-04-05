@@ -14,8 +14,6 @@ const studentSchema = z.object({
   registrationNumber: z.string().min(1, 'Registration number is required'),
   department: z.string().min(1, 'Department is required'),
   yearOfStudy: z.string().min(1, 'Year of study is required'),
-  emergencyContact: z.string().min(2, 'Emergency contact name is required'),
-  emergencyPhone: z.string().min(10, 'Emergency phone is required'),
 })
 
 export const StudentForm = ({ student, onSubmit, loading, onCancel }) => {
@@ -88,21 +86,6 @@ export const StudentForm = ({ student, onSubmit, loading, onCancel }) => {
               placeholder="2nd Year"
               {...register('yearOfStudy')}
               error={errors.yearOfStudy?.message}
-            />
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Input
-              label="Emergency Contact Name"
-              placeholder="Jane Doe"
-              {...register('emergencyContact')}
-              error={errors.emergencyContact?.message}
-            />
-            <Input
-              label="Emergency Contact Phone"
-              placeholder="+1 234 567 8900"
-              {...register('emergencyPhone')}
-              error={errors.emergencyPhone?.message}
             />
           </div>
         </CardContent>

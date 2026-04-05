@@ -8,6 +8,7 @@ import { Button } from '../../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
 import axios from '../../lib/api/axios'
 import { API_ENDPOINTS } from '../../lib/api/endpoints'
+import { toast } from 'sonner'
 
 export const DashboardPage = () => {
   const { user } = useAuth()
@@ -17,6 +18,9 @@ export const DashboardPage = () => {
   const [students, setStudents] = useState([])
   const [payments, setPayments] = useState([])
   const [users, setUsers] = useState([])
+  const currentStudent = user?.role === 'STUDENT'
+    ? students.find((student) => student.email === user.email)
+    : null
 
   useEffect(() => {
     const fetchData = async () => {
@@ -147,21 +151,32 @@ export const DashboardPage = () => {
               <CardTitle>Recent Complaints</CardTitle>
             </CardHeader>
             <CardContent>
-              {complaints.slice(0, 5).map((complaint, index) => (
-                <div key={complaint.id} className="flex justify-between items-center py-3 border-b border-slate-200/50 dark:border-slate-700/50 last:border-b-0">
-                  <div>
-                    <p className="font-semibold text-slate-900 dark:text-slate-100">{complaint.title}</p>
-                    <p className="text-sm text-slate-600 dark:text-slate-400">By: {complaint.studentName}</p>
+              {complaints.slice(0, 5).map((complaint) => {
+                const complaintSummary = complaint.description || complaint.title || 'Complaint'
+
+                return (
+                  <div key={complaint.id} className="flex justify-between items-center py-3 border-b border-slate-200/50 dark:border-slate-700/50 last:border-b-0">
+                    <div>
+                      <p className="font-semibold text-slate-900 dark:text-slate-100">{complaintSummary}</p>
+                      <p className="text-sm text-slate-600 dark:text-slate-400">
+                        By: {complaint.studentName || 'Unknown student'}
+                        {complaint.registrationNumber ? ` · ${complaint.registrationNumber}` : ''}
+                      </p>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                        {complaint.roomNumber ? `Room ${complaint.roomNumber}` : 'Room not assigned'}
+                        {complaint.priority ? ` · ${complaint.priority}` : ''}
+                      </p>
+                    </div>
+                    <span className={`px-3 py-1 rounded-full text-xs font-medium ${
+                      complaint.status === 'PENDING' ? 'bg-gradient-to-r from-yellow-400 to-orange-400 text-yellow-900' :
+                      complaint.status === 'RESOLVED' ? 'bg-gradient-to-r from-green-400 to-emerald-400 text-green-900' :
+                      'bg-gradient-to-r from-blue-400 to-indigo-400 text-blue-900'
+                    }`}>
+                      {complaint.status}
+                    </span>
                   </div>
-                  <span className={`px-3 py-1 rounded-full text-xs font-medium ${
-                    complaint.status === 'PENDING' ? 'bg-gradient-to-r from-yellow-400 to-orange-400 text-yellow-900' :
-                    complaint.status === 'RESOLVED' ? 'bg-gradient-to-r from-green-400 to-emerald-400 text-green-900' :
-                    'bg-gradient-to-r from-blue-400 to-indigo-400 text-blue-900'
-                  }`}>
-                    {complaint.status}
-                  </span>
-                </div>
-              ))}
+                )
+              })}
               {complaints.length === 0 && (
                 <div className="text-center py-8 text-slate-500 dark:text-slate-400">
                   <AlertCircle className="mx-auto mb-2" size={32} />
@@ -371,61 +386,63 @@ export const DashboardPage = () => {
             <CardTitle>All Complaints</CardTitle>
           </CardHeader>
           <CardContent>
-            {complaints.map(complaint => (
-              <div key={complaint.id} className="border-b border-slate-200 pb-4 mb-4 last:border-b-0 last:pb-0 last:mb-0">
-                <div className="flex justify-between items-start mb-3">
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-lg text-slate-900 dark:text-slate-100">{complaint.title}</h3>
-                    <p className="text-slate-600 dark:text-slate-300 mt-1">{complaint.description}</p>
-                  </div>
-                  <div className="flex items-center gap-2 ml-4">
-                    <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-                      complaint.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' : 
-                      complaint.status === 'RESOLVED' ? 'bg-green-100 text-green-800' : 
-                      'bg-blue-100 text-blue-800'
-                    }`}>
-                      {complaint.status}
-                    </span>
-                    {complaint.status === 'PENDING' && (
-                      <Button size="sm" onClick={() => handleResolveComplaint(complaint.id)}>
-                        Resolve
-                      </Button>
-                    )}
-                  </div>
-                </div>
-                
-                <div className="bg-slate-50 dark:bg-slate-800 rounded-lg p-3">
-                  <h4 className="font-medium text-slate-900 dark:text-slate-100 mb-2">Student Details:</h4>
-                  <div className="grid grid-cols-2 gap-4 text-sm text-slate-700 dark:text-slate-200">
-                    <div>
-                      <span className="font-medium">Name:</span> {complaint.studentName || 'N/A'}
-                    </div>
-                    <div>
-                      <span className="font-medium">Email:</span> {complaint.studentEmail || 'N/A'}
-                    </div>
-                    <div>
-                      <span className="font-medium">Registration:</span> {complaint.registrationNumber || 'N/A'}
-                    </div>
-                    <div>
-                      <span className="font-medium">Department:</span> {complaint.department || 'N/A'}
-                    </div>
-                    <div>
-                      <span className="font-medium">Year:</span> {complaint.yearOfStudy || 'N/A'}
-                    </div>
-                    <div>
-                      <span className="font-medium">Room:</span> {complaint.roomNumber || 'N/A'}
-                    </div>
-                  </div>
-                </div>
+            {complaints.map((complaint) => {
+              const complaintSummary = complaint.description || complaint.title || 'Complaint'
 
-                {complaint.status === 'RESOLVED' && complaint.solvedBy && (
-                  <div className="mt-3 text-sm text-slate-600">
-                    <span className="font-medium">Resolved by:</span> {complaint.solvedBy} 
-                    {complaint.solvedAt && <span> on {new Date(complaint.solvedAt).toLocaleDateString()}</span>}
+              return (
+                <div key={complaint.id} className="border-b border-slate-200 pb-4 mb-4 last:border-b-0 last:pb-0 last:mb-0">
+                  <div className="flex justify-between items-start mb-3">
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-lg text-slate-900 dark:text-slate-100">{complaintSummary}</h3>
+                      <p className="text-slate-600 dark:text-slate-300 mt-1">{complaint.description || complaint.title || 'No description provided'}</p>
+                    </div>
+                    <div className="flex items-center gap-2 ml-4">
+                      <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                        complaint.status === 'PENDING' ? 'bg-yellow-100 text-yellow-800' : 
+                        complaint.status === 'RESOLVED' ? 'bg-green-100 text-green-800' : 
+                        'bg-blue-100 text-blue-800'
+                      }`}>
+                        {complaint.status}
+                      </span>
+                      {complaint.priority && (
+                        <span className="px-3 py-1 rounded-full text-sm font-medium bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200">
+                          {complaint.priority}
+                        </span>
+                      )}
+                      {complaint.status === 'PENDING' && (
+                        <Button size="sm" onClick={() => handleResolveComplaint(complaint.id)}>
+                          Resolve
+                        </Button>
+                      )}
+                    </div>
                   </div>
-                )}
-              </div>
-            ))}
+
+                  <div className="bg-slate-50 dark:bg-slate-800 rounded-lg p-3">
+                    <h4 className="font-medium text-slate-900 dark:text-slate-100 mb-2">Student Details:</h4>
+                    <div className="grid grid-cols-2 gap-4 text-sm text-slate-700 dark:text-slate-200">
+                      <div>
+                        <span className="font-medium">Name:</span> {complaint.studentName || 'N/A'}
+                      </div>
+                      <div>
+                        <span className="font-medium">Email:</span> {complaint.studentEmail || 'N/A'}
+                      </div>
+                      <div>
+                        <span className="font-medium">Registration:</span> {complaint.registrationNumber || 'N/A'}
+                      </div>
+                      <div>
+                        <span className="font-medium">Department:</span> {complaint.department || 'N/A'}
+                      </div>
+                      <div>
+                        <span className="font-medium">Year:</span> {complaint.yearOfStudy || 'N/A'}
+                      </div>
+                      <div>
+                        <span className="font-medium">Room:</span> {complaint.roomNumber || 'N/A'}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
           </CardContent>
         </Card>
       </div>
@@ -449,7 +466,7 @@ export const DashboardPage = () => {
         <StatCard
           icon={DollarSign}
           label="Rent Status"
-          value={students.find(s => s.email === user.email)?.rentPaid ? "Paid" : "Unpaid"}
+          value={currentStudent?.rentPaid ? 'Paid' : 'Unpaid'}
         />
       </div>
 
@@ -477,14 +494,14 @@ export const DashboardPage = () => {
           </CardHeader>
           <CardContent>
             <div className="text-center py-8">
-              <div className={`text-4xl mb-4 ${students.find(s => s.email === user.email)?.rentPaid ? 'text-green-500' : 'text-red-500'}`}>
-                {students.find(s => s.email === user.email)?.rentPaid ? '✓' : '✗'}
+              <div className={`text-4xl mb-4 ${currentStudent?.rentPaid ? 'text-green-500' : 'text-red-500'}`}>
+                {currentStudent?.rentPaid ? '✓' : '✗'}
               </div>
               <p className="text-lg font-medium">
-                {students.find(s => s.email === user.email)?.rentPaid ? 'Rent Paid' : 'Rent Pending'}
+                {currentStudent?.rentPaid ? 'Rent Paid' : 'Rent Pending'}
               </p>
-              <Button className="mt-4" disabled={students.find(s => s.email === user.email)?.rentPaid}>
-                {students.find(s => s.email === user.email)?.rentPaid ? 'Paid' : 'Pay Rent'}
+              <Button className="mt-4" disabled={currentStudent?.rentPaid}>
+                {currentStudent?.rentPaid ? 'Paid' : 'Pay Rent'}
               </Button>
             </div>
           </CardContent>
@@ -498,13 +515,6 @@ export const DashboardPage = () => {
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmitComplaint} className="space-y-4">
-              <input
-                name="title"
-                type="text"
-                placeholder="Complaint Title"
-                className="w-full px-3 py-2 border rounded"
-                required
-              />
               <textarea
                 name="description"
                 placeholder="Description"
@@ -512,6 +522,15 @@ export const DashboardPage = () => {
                 rows={3}
                 required
               />
+              <select
+                name="priority"
+                className="w-full px-3 py-2 border rounded bg-white dark:bg-slate-900"
+                defaultValue="MEDIUM"
+              >
+                <option value="LOW">LOW</option>
+                <option value="MEDIUM">MEDIUM</option>
+                <option value="HIGH">HIGH</option>
+              </select>
               <Button type="submit">Submit Complaint</Button>
             </form>
           </CardContent>
@@ -524,32 +543,33 @@ export const DashboardPage = () => {
     try {
       await axios.put(API_ENDPOINTS.COMPLAINTS.UPDATE(complaintId), {
         status: 'RESOLVED',
-        solvedBy: user.name,
-        solvedAt: new Date().toISOString()
       })
       // Refresh complaints
       const complaintsRes = await axios.get(API_ENDPOINTS.COMPLAINTS.LIST)
       setComplaints(complaintsRes.data)
+      toast.success('Complaint resolved successfully')
     } catch (error) {
       console.error('Error resolving complaint:', error)
+      toast.error('Failed to resolve complaint')
     }
   }
 
   const handleSubmitComplaint = async (e) => {
     e.preventDefault()
     const formData = new FormData(e.target)
-    const student = students.find(s => s.email === user.email)
     try {
       await axios.post(API_ENDPOINTS.COMPLAINTS.CREATE, {
-        title: formData.get('title'),
         description: formData.get('description'),
-        studentId: student?.id,
-        studentName: user.name,
+        priority: formData.get('priority'),
+        status: 'PENDING',
+        studentId: currentStudent?.id,
+        studentName: currentStudent?.name || user.name,
         studentEmail: user.email,
-        registrationNumber: student?.registrationNumber,
-        department: student?.department,
-        yearOfStudy: student?.yearOfStudy,
-        roomNumber: student?.roomId ? rooms.find(r => r.id === student.roomId)?.roomNumber : 'Not allocated'
+        registrationNumber: currentStudent?.registrationNumber,
+        department: currentStudent?.department,
+        yearOfStudy: currentStudent?.yearOfStudy,
+        roomId: currentStudent?.roomId,
+        roomNumber: currentStudent?.roomId ? rooms.find((room) => String(room.id) === String(currentStudent.roomId))?.roomNumber : null,
       })
       // Refresh complaints
       const complaintsRes = await axios.get(API_ENDPOINTS.COMPLAINTS.LIST)

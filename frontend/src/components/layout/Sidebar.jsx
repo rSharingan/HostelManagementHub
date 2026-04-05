@@ -15,7 +15,7 @@ const navigationItems = [
   { label: 'Payments', icon: DollarSign, href: '/fees/payments', roles: [ROLES.ADMIN] },
   { label: 'Room Requests', icon: ClipboardCheck, href: '/room-requests', roles: [ROLES.ADMIN] },
   { label: 'Staff', icon: Users, href: '/staff', roles: [ROLES.ADMIN] },
-  { label: 'Maintenance', icon: Wrench, href: '/maintenance', roles: [ROLES.ADMIN, ROLES.WARDEN, ROLES.CARETAKER] },
+  { label: 'Maintenance', icon: Wrench, href: '/maintenance', roles: [ROLES.ADMIN, ROLES.WARDEN, ROLES.CARETAKER, ROLES.STUDENT] },
   { label: 'Reports', icon: BarChart3, href: '/reports/occupancy', roles: [ROLES.ADMIN, ROLES.WARDEN] },
   { label: 'Settings', icon: Settings, href: '/settings/profile', roles: [ROLES.ADMIN, ROLES.WARDEN, ROLES.CARETAKER, ROLES.STUDENT] },
 ]

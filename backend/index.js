@@ -69,6 +69,15 @@ async function ensureColumnExists(table, column, definition) {
   `);
 }
 
+async function ensureForeignKey(constraintName, table, definition) {
+  await query(`
+    IF NOT EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = '${constraintName}')
+    BEGIN
+      ALTER TABLE dbo.${table} ADD CONSTRAINT ${constraintName} ${definition}
+    END
+  `);
+}
+
 function toNullableInt(value) {
   if (value === null || value === undefined || value === '') {
     return null;
@@ -85,6 +94,30 @@ function toNullableInt(value) {
 function toIntOrDefault(value, fallback) {
   const parsed = toNullableInt(value);
   return parsed === null ? fallback : parsed;
+}
+
+function toBit(value, fallback = 0) {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
+  }
+
+  if (typeof value === 'boolean') {
+    return value ? 1 : 0;
+  }
+
+  if (typeof value === 'number') {
+    return value ? 1 : 0;
+  }
+
+  const normalized = String(value).toLowerCase();
+  if (['true', '1', 'yes', 'y', 'on'].includes(normalized)) {
+    return 1;
+  }
+  if (['false', '0', 'no', 'n', 'off'].includes(normalized)) {
+    return 0;
+  }
+
+  return fallback;
 }
 
 function getRowId(row) {
@@ -205,6 +238,10 @@ async function ensureFeatureTables() {
         floor INT NULL,
         capacity INT NOT NULL DEFAULT 1,
         type NVARCHAR(100) NULL,
+        hasAC BIT NOT NULL DEFAULT 0,
+        hasAttachedBathroom BIT NOT NULL DEFAULT 0,
+        hasWifi BIT NOT NULL DEFAULT 0,
+        hasBalcony BIT NOT NULL DEFAULT 0,
         rentalCost DECIMAL(10,2) NULL,
         status NVARCHAR(50) NOT NULL DEFAULT 'AVAILABLE',
         hostelId INT NULL
@@ -213,6 +250,10 @@ async function ensureFeatureTables() {
   `)
 
   await ensureColumnExists('Rooms', 'hostelId', 'hostelId INT NULL')
+  await ensureColumnExists('Rooms', 'hasAC', 'hasAC BIT NOT NULL DEFAULT 0')
+  await ensureColumnExists('Rooms', 'hasAttachedBathroom', 'hasAttachedBathroom BIT NOT NULL DEFAULT 0')
+  await ensureColumnExists('Rooms', 'hasWifi', 'hasWifi BIT NOT NULL DEFAULT 0')
+  await ensureColumnExists('Rooms', 'hasBalcony', 'hasBalcony BIT NOT NULL DEFAULT 0')
 
   await query(`
     IF OBJECT_ID('dbo.Allocations', 'U') IS NULL
@@ -322,6 +363,13 @@ async function ensureFeatureTables() {
   await ensureColumnExists('Maintenance', 'roomId', 'roomId INT NULL')
   await ensureColumnExists('Maintenance', 'studentId', 'studentId INT NULL')
   await ensureColumnExists('Maintenance', 'staffId', 'staffId INT NULL')
+  await ensureColumnExists('Maintenance', 'assignedById', 'assignedById INT NULL')
+  await ensureColumnExists('Maintenance', 'assignedDate', 'assignedDate DATETIME2 NULL')
+  await ensureColumnExists('Maintenance', 'resolvedById', 'resolvedById INT NULL')
+  await ensureColumnExists('Maintenance', 'resolvedDate', 'resolvedDate DATETIME2 NULL')
+  await ensureColumnExists('Maintenance', 'studentApprovalStatus', "studentApprovalStatus NVARCHAR(50) NOT NULL DEFAULT 'PENDING'")
+  await ensureColumnExists('Maintenance', 'studentApprovedById', 'studentApprovedById INT NULL')
+  await ensureColumnExists('Maintenance', 'studentApprovedDate', 'studentApprovedDate DATETIME2 NULL')
 
   await query(`
     IF OBJECT_ID('dbo.Payments', 'U') IS NULL
@@ -377,6 +425,19 @@ async function ensureFeatureTables() {
   await query(`
     UPDATE dbo.Users SET hostelId = 1 WHERE hostelId IS NULL AND role IN ('ADMIN', 'WARDEN', 'ACCOUNTANT', 'CARETAKER')
   `)
+
+  await ensureForeignKey('FK_Users_Hostels', 'Users', 'FOREIGN KEY (hostelId) REFERENCES dbo.Hostels(id)')
+  await ensureForeignKey('FK_Rooms_Hostels', 'Rooms', 'FOREIGN KEY (hostelId) REFERENCES dbo.Hostels(id)')
+  await ensureForeignKey('FK_Beds_Rooms', 'Beds', 'FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)')
+  await ensureForeignKey('FK_StayRecords_Students', 'StayRecords', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
+  await ensureForeignKey('FK_StayRecords_Beds', 'StayRecords', 'FOREIGN KEY (bedId) REFERENCES dbo.Beds(id)')
+  await ensureForeignKey('FK_Allocations_Beds', 'Allocations', 'FOREIGN KEY (bedId) REFERENCES dbo.Beds(id)')
+  await ensureForeignKey('FK_RoomRequests_Students', 'RoomRequests', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
+  await ensureForeignKey('FK_RoomRequests_Rooms', 'RoomRequests', 'FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)')
+  await ensureForeignKey('FK_Payments_Students', 'Payments', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
+  await ensureForeignKey('FK_Maintenance_Students', 'Maintenance', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
+  await ensureForeignKey('FK_Maintenance_Staff', 'Maintenance', 'FOREIGN KEY (staffId) REFERENCES dbo.Users(id)')
+  await ensureForeignKey('FK_Maintenance_Rooms', 'Maintenance', 'FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)')
 
   await seedBedsForAllRooms()
 }
@@ -536,12 +597,6 @@ app.delete('/api/students/:id', async (req, res) => {
 // Rooms CRUD
 app.get('/api/rooms', async (req, res) => {
   try {
-    const auth = req.headers.authorization || '';
-    const token = auth.replace('Bearer ', '');
-    // For now, assume token contains user info, but we'll use a simple check
-    // In a real app, you'd decode the JWT token to get user info
-    const isAdmin = token.includes('ADMIN'); // Simple check for demo
-    
     // Get rooms with their allocations. Use a single allocations fetch to avoid concurrent queries on one connection.
     const rooms = await query('SELECT * FROM Rooms');
     const allocationRows = await query(`
@@ -575,13 +630,7 @@ app.get('/api/rooms', async (req, res) => {
       });
     }
     
-    if (!isAdmin) {
-      // For students, only show available rooms
-      const availableRooms = roomsWithAllocations.filter(room => room.status === 'AVAILABLE');
-      res.json(availableRooms);
-    } else {
-      res.json(roomsWithAllocations);
-    }
+    res.json(roomsWithAllocations);
   } catch (err) {
     console.error('Get rooms error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -593,9 +642,13 @@ app.post('/api/rooms', async (req, res) => {
     const payload = req.body;
     const floor = toNullableInt(payload.floor);
     const hostelId = toIntOrDefault(payload.hostelId, 1);
+    const hasAC = toBit(payload.hasAC, 0);
+    const hasAttachedBathroom = toBit(payload.hasAttachedBathroom, 0);
+    const hasWifi = toBit(payload.hasWifi, 0);
+    const hasBalcony = toBit(payload.hasBalcony, 0);
     await query(
-      'INSERT INTO Rooms (roomNumber, block, floor, capacity, type, rentalCost, status, hostelId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [payload.roomNumber, payload.block, floor, payload.capacity, payload.type, payload.rentalCost, payload.status || 'AVAILABLE', hostelId]
+      'INSERT INTO Rooms (roomNumber, block, floor, capacity, type, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, rentalCost, status, hostelId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [payload.roomNumber, payload.block, floor, payload.capacity, payload.type, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, payload.rentalCost, payload.status || 'AVAILABLE', hostelId]
     );
     const insertedRoom = await query('SELECT TOP 1 * FROM Rooms WHERE roomNumber = ? AND block = ? AND floor = ? ORDER BY id DESC', [payload.roomNumber, payload.block, floor]);
     if (insertedRoom && insertedRoom.length > 0) {
@@ -603,7 +656,7 @@ app.post('/api/rooms', async (req, res) => {
       res.status(201).json({ ...insertedRoom[0] });
       return;
     }
-    res.status(201).json({ ...payload, floor, hostelId });
+    res.status(201).json({ ...payload, floor, hostelId, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
   } catch (err) {
     console.error('Create room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -675,10 +728,14 @@ app.put('/api/rooms/:id', async (req, res) => {
     const payload = req.body;
     const floor = toNullableInt(payload.floor);
     const hostelId = toIntOrDefault(payload.hostelId, 1);
+    const hasAC = toBit(payload.hasAC, 0);
+    const hasAttachedBathroom = toBit(payload.hasAttachedBathroom, 0);
+    const hasWifi = toBit(payload.hasWifi, 0);
+    const hasBalcony = toBit(payload.hasBalcony, 0);
 
     await query(
       `UPDATE Rooms 
-       SET roomNumber = ?, block = ?, floor = ?, capacity = ?, type = ?, rentalCost = ?, status = ?, hostelId = ?
+       SET roomNumber = ?, block = ?, floor = ?, capacity = ?, type = ?, hasAC = ?, hasAttachedBathroom = ?, hasWifi = ?, hasBalcony = ?, rentalCost = ?, status = ?, hostelId = ?
        WHERE id = ?`,
       [
         payload.roomNumber,
@@ -686,6 +743,10 @@ app.put('/api/rooms/:id', async (req, res) => {
         floor,
         payload.capacity,
         payload.type,
+        hasAC,
+        hasAttachedBathroom,
+        hasWifi,
+        hasBalcony,
         payload.rentalCost,
         payload.status || 'AVAILABLE',
         hostelId,
@@ -695,7 +756,7 @@ app.put('/api/rooms/:id', async (req, res) => {
 
     await ensureBedsForRoom(id, toIntOrDefault(payload.capacity, 1));
 
-    res.json({ ...payload, id, floor, hostelId });
+    res.json({ ...payload, id, floor, hostelId, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
   } catch (err) {
     console.error('Update room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -730,12 +791,20 @@ app.get('/api/complaints', async (req, res) => {
   try {
     const result = await query(`
       SELECT m.id, m.description, m.room, m.roomId, m.studentId, m.staffId, m.priority, m.status, m.reportedDate, m.assignedTo,
+             m.assignedById, m.assignedDate, m.resolvedById, m.resolvedDate,
+             m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
              s.name AS studentName,
              st.name AS staffName,
+             ab.name AS assignedByName,
+             rb.name AS resolvedByName,
+             sap.name AS studentApprovedByName,
              r.roomNumber
       FROM Maintenance m
       LEFT JOIN Students s ON m.studentId = s.id
       LEFT JOIN Users st ON m.staffId = st.id OR m.assignedTo = st.id
+      LEFT JOIN Users ab ON m.assignedById = ab.id
+      LEFT JOIN Users rb ON m.resolvedById = rb.id
+      LEFT JOIN Users sap ON m.studentApprovedById = sap.id
       LEFT JOIN Rooms r ON m.roomId = r.id
       ORDER BY m.reportedDate DESC
     `);
@@ -770,8 +839,8 @@ app.post('/api/complaints', async (req, res) => {
     const linkedRoom = roomId ? await getRoomById(roomId) : null;
     const roomName = payload.room || linkedRoom?.roomNumber || '';
     await query(
-      'INSERT INTO Maintenance (description, room, roomId, studentId, staffId, priority, status, reportedDate, assignedTo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', 'PENDING', reportedDate, staffId || null]
+      'INSERT INTO Maintenance (description, room, roomId, studentId, staffId, priority, status, reportedDate, assignedTo, studentApprovalStatus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', 'PENDING_ASSIGNMENT', reportedDate, staffId || null, 'PENDING']
     );
     const created = await query('SELECT TOP 1 * FROM Maintenance ORDER BY id DESC');
     res.status(201).json({ ...(created && created[0] ? created[0] : payload), room: roomName, roomId, studentId, staffId });
@@ -788,12 +857,60 @@ app.put('/api/complaints/:id', async (req, res) => {
     const roomId = toNullableInt(payload.roomId);
     const studentId = toNullableInt(payload.studentId);
     const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
+    const actorUserId = toNullableInt(payload.actorUserId);
     const linkedRoom = roomId ? await getRoomById(roomId) : null;
     const roomName = payload.room || linkedRoom?.roomNumber || '';
 
+    if (payload.action === 'ASSIGN') {
+      await query(
+        `UPDATE Maintenance
+         SET room = ?, roomId = ?, staffId = ?, assignedTo = ?, assignedById = ?, assignedDate = GETDATE(),
+             status = ?, studentApprovalStatus = ?
+         WHERE id = ?`,
+        [roomName, roomId, staffId, staffId, actorUserId, 'ASSIGNED', 'PENDING', id]
+      );
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'ASSIGN' });
+    }
+
+    if (payload.action === 'RESOLVE') {
+      await query(
+        `UPDATE Maintenance
+         SET status = ?, resolvedById = ?, resolvedDate = GETDATE()
+         WHERE id = ?`,
+        ['RESOLVED_PENDING_APPROVAL', actorUserId || staffId, id]
+      );
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'RESOLVE' });
+    }
+
+    if (payload.action === 'STUDENT_APPROVE') {
+      const approvalDecision = String(payload.decision || 'APPROVED').toUpperCase();
+      if (approvalDecision === 'REJECTED') {
+        await query(
+          `UPDATE Maintenance
+           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(), status = ?
+           WHERE id = ?`,
+          ['REJECTED', actorUserId, 'ASSIGNED', id]
+        );
+      } else {
+        await query(
+          `UPDATE Maintenance
+           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(), status = ?
+           WHERE id = ?`,
+          ['APPROVED', actorUserId, 'CLOSED', id]
+        );
+      }
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'STUDENT_APPROVE', decision: approvalDecision });
+    }
+
     await query(
       'UPDATE Maintenance SET description = ?, room = ?, roomId = ?, studentId = ?, staffId = ?, priority = ?, status = ?, assignedTo = ? WHERE id = ?',
-      [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', payload.status || 'PENDING', staffId || null, id]
+      [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', payload.status || 'PENDING_ASSIGNMENT', staffId || null, id]
     );
 
     res.json({ ...payload, id, room: roomName, roomId, studentId, staffId });
@@ -819,12 +936,20 @@ app.get('/api/maintenance', async (req, res) => {
   try {
     const result = await query(`
       SELECT m.id, m.description, m.room, m.roomId, m.studentId, m.staffId, m.priority, m.status, m.reportedDate, m.assignedTo,
+             m.assignedById, m.assignedDate, m.resolvedById, m.resolvedDate,
+             m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
              s.name AS studentName,
              st.name AS staffName,
+             ab.name AS assignedByName,
+             rb.name AS resolvedByName,
+             sap.name AS studentApprovedByName,
              r.roomNumber
       FROM Maintenance m
       LEFT JOIN Students s ON m.studentId = s.id
       LEFT JOIN Users st ON m.staffId = st.id OR m.assignedTo = st.id
+      LEFT JOIN Users ab ON m.assignedById = ab.id
+      LEFT JOIN Users rb ON m.resolvedById = rb.id
+      LEFT JOIN Users sap ON m.studentApprovedById = sap.id
       LEFT JOIN Rooms r ON m.roomId = r.id
       ORDER BY m.reportedDate DESC
     `);

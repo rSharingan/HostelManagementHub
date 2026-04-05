@@ -13,7 +13,10 @@ const roomSchema = z.object({
   floor: z.string().min(1, 'Floor is required'),
   capacity: z.coerce.number().min(1, 'Capacity must be at least 1'),
   type: z.string().min(1, 'Room type is required'),
-  amenities: z.string().optional(),
+  hasAC: z.boolean().default(false),
+  hasAttachedBathroom: z.boolean().default(false),
+  hasWifi: z.boolean().default(false),
+  hasBalcony: z.boolean().default(false),
   rentalCost: z.coerce.number().min(0, 'Rental cost must be 0 or more'),
 })
 
@@ -25,7 +28,13 @@ export const RoomForm = ({ room, onSubmit, loading, onCancel }) => {
     reset,
   } = useForm({
     resolver: zodResolver(roomSchema),
-    defaultValues: room || {},
+    defaultValues: {
+      hasAC: false,
+      hasAttachedBathroom: false,
+      hasWifi: false,
+      hasBalcony: false,
+      ...room,
+    },
   })
 
   useEffect(() => {
@@ -91,13 +100,27 @@ export const RoomForm = ({ room, onSubmit, loading, onCancel }) => {
             />
           </div>
 
-          <Input
-            label="Amenities"
-            placeholder="AC, WiFi, Attached Bathroom"
-            {...register('amenities')}
-            error={errors.amenities?.message}
-            helperText="Comma separated values"
-          />
+          <div>
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Room Attributes</p>
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                <input type="checkbox" {...register('hasAC')} />
+                Air Conditioning (AC)
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                <input type="checkbox" {...register('hasAttachedBathroom')} />
+                Attached Bathroom
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                <input type="checkbox" {...register('hasWifi')} />
+                Wi-Fi
+              </label>
+              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+                <input type="checkbox" {...register('hasBalcony')} />
+                Balcony
+              </label>
+            </div>
+          </div>
         </CardContent>
 
         <CardFooter>

@@ -22,6 +22,13 @@ export const RoomsPage = () => {
   const [deleteId, setDeleteId] = useState(null)
   const [applyingRoomId, setApplyingRoomId] = useState(null)
   const [optimisticRequestedRoomIds, setOptimisticRequestedRoomIds] = useState([])
+  const [filters, setFilters] = useState({
+    availableOnly: false,
+    hasAC: false,
+    hasAttachedBathroom: false,
+    hasWifi: false,
+    hasBalcony: false,
+  })
   const createRoomRequest = useCreateRoomRequest()
   const { data: roomRequests = [] } = useRoomRequests(undefined, user?.role === 'STUDENT')
 
@@ -42,6 +49,27 @@ export const RoomsPage = () => {
 
     return new Set(roomIds)
   }, [optimisticRequestedRoomIds, roomRequests, user?.id, user?.role])
+
+  const filteredRooms = useMemo(() => {
+    return rooms.filter((room) => {
+      if (filters.availableOnly && room.status !== 'AVAILABLE') {
+        return false
+      }
+      if (filters.hasAC && !room.hasAC) {
+        return false
+      }
+      if (filters.hasAttachedBathroom && !room.hasAttachedBathroom) {
+        return false
+      }
+      if (filters.hasWifi && !room.hasWifi) {
+        return false
+      }
+      if (filters.hasBalcony && !room.hasBalcony) {
+        return false
+      }
+      return true
+    })
+  }, [filters, rooms])
 
   const handleDelete = async () => {
     try {
@@ -83,6 +111,29 @@ export const RoomsPage = () => {
     {
       header: 'Type',
       accessorKey: 'type',
+    },
+    {
+      header: 'Attributes',
+      cell: ({ row }) => {
+        const attrs = [
+          row.original.hasAC && 'AC',
+          row.original.hasAttachedBathroom && 'Attached Bath',
+          row.original.hasWifi && 'Wi-Fi',
+          row.original.hasBalcony && 'Balcony',
+        ].filter(Boolean)
+
+        if (attrs.length === 0) {
+          return <span className="text-gray-500">Standard</span>
+        }
+
+        return (
+          <div className="flex flex-wrap gap-1">
+            {attrs.map((attr) => (
+              <Badge key={attr} variant="secondary">{attr}</Badge>
+            ))}
+          </div>
+        )
+      },
     },
     {
       header: 'Capacity',
@@ -133,7 +184,7 @@ export const RoomsPage = () => {
       cell: ({ row }) => {
         const isAdmin = user?.role === 'ADMIN'
         const isAvailable = row.original.status === 'AVAILABLE'
-          const isRequested = requestedRoomIds.has(String(row.original.id))
+        const isRequested = requestedRoomIds.has(String(row.original.id))
         
         if (isAdmin) {
           return (
@@ -212,13 +263,61 @@ export const RoomsPage = () => {
           <p className="text-sm text-gray-500 mt-2">{error.message}</p>
         </div>
       ) : (
-        <DataTable
-          columns={columns}
-          data={rooms}
-          onRowClick={(row) => navigate(`/rooms/${row.id}`)}
-          searchKey="roomNumber"
-          searchPlaceholder="Search rooms..."
-        />
+        <>
+          <div className="mb-4 p-4 border border-slate-200 dark:border-slate-700 rounded-lg">
+            <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Filter Rooms</p>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={filters.availableOnly}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, availableOnly: e.target.checked }))}
+                />
+                Available Only
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={filters.hasAC}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, hasAC: e.target.checked }))}
+                />
+                AC
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={filters.hasAttachedBathroom}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, hasAttachedBathroom: e.target.checked }))}
+                />
+                Attached Bath
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={filters.hasWifi}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, hasWifi: e.target.checked }))}
+                />
+                Wi-Fi
+              </label>
+              <label className="flex items-center gap-2">
+                <input
+                  type="checkbox"
+                  checked={filters.hasBalcony}
+                  onChange={(e) => setFilters((prev) => ({ ...prev, hasBalcony: e.target.checked }))}
+                />
+                Balcony
+              </label>
+            </div>
+          </div>
+
+          <DataTable
+            columns={columns}
+            data={filteredRooms}
+            onRowClick={(row) => navigate(`/rooms/${row.id}`)}
+            searchKey="roomNumber"
+            searchPlaceholder="Search rooms..."
+          />
+        </>
       )}
 
       <ConfirmDialog

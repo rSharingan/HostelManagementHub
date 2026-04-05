@@ -8,8 +8,10 @@
  * @property {string} registrationNumber
  * @property {string} department
  * @property {string} yearOfStudy
- * @property {string} emergencyContact
- * @property {string} emergencyPhone
+ * @property {string} hostelId
+ * @property {string} roomId
+ * @property {string} bedId
+ * @property {boolean} rentPaid
  * @property {Date} admissionDate
  * @property {string} status - 'ACTIVE' | 'INACTIVE' | 'GRADUATED'
  */

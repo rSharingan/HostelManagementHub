@@ -9,6 +9,9 @@
  * @property {number} occupancy
  * @property {string} type - 'SINGLE' | 'DOUBLE' | 'TRIPLE' | 'QUAD'
  * @property {string} status - 'AVAILABLE' | 'OCCUPIED' | 'MAINTENANCE'
- * @property {string} amenities - comma separated
+ * @property {boolean} hasAC
+ * @property {boolean} hasAttachedBathroom
+ * @property {boolean} hasWifi
+ * @property {boolean} hasBalcony
  * @property {number} rentalCost
  */
