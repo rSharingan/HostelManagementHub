@@ -87,7 +87,81 @@ function toIntOrDefault(value, fallback) {
   return parsed === null ? fallback : parsed;
 }
 
+function getRowId(row) {
+  if (!row) {
+    return null;
+  }
+
+  return row.id ?? row.Id ?? row.ID ?? row.IDENTIFIER ?? null;
+}
+
+async function getRoomById(roomId) {
+  const result = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
+  return result && result.length > 0 ? result[0] : null;
+}
+
+async function ensureBedsForRoom(roomId, capacity) {
+  const existingBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ?', [roomId]);
+  const existingCount = Number(existingBeds?.[0]?.count || 0);
+  const targetCount = Math.max(0, Number(capacity || 0));
+
+  for (let bedNumber = existingCount + 1; bedNumber <= targetCount; bedNumber += 1) {
+    await query('INSERT INTO Beds (roomId, bedNumber, status) VALUES (?, ?, ?)', [roomId, bedNumber, 'AVAILABLE']);
+  }
+}
+
+async function getAvailableBed(roomId) {
+  const result = await query(
+    'SELECT TOP 1 * FROM Beds WHERE roomId = ? AND status = ? ORDER BY bedNumber ASC',
+    [roomId, 'AVAILABLE']
+  );
+  if (!result || result.length === 0) {
+    return null;
+  }
+
+  const bed = result[0];
+  return { ...bed, id: getRowId(bed) };
+}
+
+async function syncRoomStatus(roomId) {
+  const room = await getRoomById(roomId);
+  if (!room) {
+    return;
+  }
+
+  const occupiedBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [roomId, 'OCCUPIED']);
+  const occupancy = Number(occupiedBeds?.[0]?.count || 0);
+  const newStatus = occupancy >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
+  await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
+}
+
+async function seedBedsForAllRooms() {
+  const rooms = await query('SELECT id, capacity FROM Rooms');
+  for (const room of rooms) {
+    await ensureBedsForRoom(room.id, room.capacity);
+  }
+}
+
+async function closeActiveStayRecord(studentId, bedId) {
+  await query(
+    'UPDATE StayRecords SET checkOutDate = GETDATE(), status = ? WHERE studentId = ? AND bedId = ? AND status = ?',
+    ['COMPLETED', studentId, bedId, 'ACTIVE']
+  );
+}
+
 async function ensureFeatureTables() {
+  await query(`
+    IF OBJECT_ID('dbo.Hostels', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Hostels (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        name NVARCHAR(255) NOT NULL,
+        address NVARCHAR(255) NULL,
+        status NVARCHAR(50) NOT NULL DEFAULT 'ACTIVE'
+      )
+    END
+  `)
+
   await query(`
     IF OBJECT_ID('dbo.Users', 'U') IS NULL
     BEGIN
@@ -96,10 +170,13 @@ async function ensureFeatureTables() {
         name NVARCHAR(255) NOT NULL,
         email NVARCHAR(255) NOT NULL UNIQUE,
         password NVARCHAR(255) NOT NULL,
-        role NVARCHAR(50) NOT NULL CHECK (role IN ('ADMIN', 'WARDEN', 'ACCOUNTANT', 'CARETAKER', 'STUDENT'))
+        role NVARCHAR(50) NOT NULL CHECK (role IN ('ADMIN', 'WARDEN', 'ACCOUNTANT', 'CARETAKER', 'STUDENT')),
+        hostelId INT NULL
       )
     END
   `)
+
+  await ensureColumnExists('Users', 'hostelId', 'hostelId INT NULL')
 
   await query(`
     IF OBJECT_ID('dbo.Students', 'U') IS NULL
@@ -129,10 +206,13 @@ async function ensureFeatureTables() {
         capacity INT NOT NULL DEFAULT 1,
         type NVARCHAR(100) NULL,
         rentalCost DECIMAL(10,2) NULL,
-        status NVARCHAR(50) NOT NULL DEFAULT 'AVAILABLE'
+        status NVARCHAR(50) NOT NULL DEFAULT 'AVAILABLE',
+        hostelId INT NULL
       )
     END
   `)
+
+  await ensureColumnExists('Rooms', 'hostelId', 'hostelId INT NULL')
 
   await query(`
     IF OBJECT_ID('dbo.Allocations', 'U') IS NULL
@@ -141,11 +221,43 @@ async function ensureFeatureTables() {
         id INT IDENTITY(1,1) PRIMARY KEY,
         studentId INT NOT NULL,
         roomId INT NOT NULL,
+        bedId INT NULL,
         checkInDate DATETIME2 DEFAULT GETDATE(),
         checkOutDate DATETIME2 NULL,
         status NVARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
         FOREIGN KEY (studentId) REFERENCES dbo.Students(id),
         FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)
+      )
+    END
+  `)
+
+  await ensureColumnExists('Allocations', 'bedId', 'bedId INT NULL')
+
+  await query(`
+    IF OBJECT_ID('dbo.Beds', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Beds (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        roomId INT NOT NULL,
+        bedNumber INT NOT NULL,
+        status NVARCHAR(50) NOT NULL DEFAULT 'AVAILABLE',
+        FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)
+      )
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.StayRecords', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.StayRecords (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        studentId INT NOT NULL,
+        bedId INT NOT NULL,
+        checkInDate DATETIME2 NOT NULL DEFAULT GETDATE(),
+        checkOutDate DATETIME2 NULL,
+        status NVARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+        FOREIGN KEY (studentId) REFERENCES dbo.Students(id),
+        FOREIGN KEY (bedId) REFERENCES dbo.Beds(id)
       )
     END
   `)
@@ -196,6 +308,9 @@ async function ensureFeatureTables() {
         id INT IDENTITY(1,1) PRIMARY KEY,
         description NVARCHAR(MAX) NOT NULL,
         room NVARCHAR(50) NULL,
+        roomId INT NULL,
+        studentId INT NULL,
+        staffId INT NULL,
         priority NVARCHAR(50) DEFAULT 'MEDIUM',
         status NVARCHAR(50) DEFAULT 'PENDING',
         reportedDate DATETIME2 NOT NULL,
@@ -203,6 +318,10 @@ async function ensureFeatureTables() {
       )
     END
   `)
+
+  await ensureColumnExists('Maintenance', 'roomId', 'roomId INT NULL')
+  await ensureColumnExists('Maintenance', 'studentId', 'studentId INT NULL')
+  await ensureColumnExists('Maintenance', 'staffId', 'staffId INT NULL')
 
   await query(`
     IF OBJECT_ID('dbo.Payments', 'U') IS NULL
@@ -241,6 +360,25 @@ async function ensureFeatureTables() {
      END`,
     ['admin@hostel.com', 'Admin', 'admin@hostel.com', 'password', 'ADMIN']
   )
+
+  await query(`
+    IF NOT EXISTS (SELECT 1 FROM dbo.Hostels WHERE id = 1)
+    BEGIN
+      SET IDENTITY_INSERT dbo.Hostels ON;
+      INSERT INTO dbo.Hostels (id, name, address, status) VALUES (1, 'Main Hostel', NULL, 'ACTIVE');
+      SET IDENTITY_INSERT dbo.Hostels OFF;
+    END
+  `)
+
+  await query(`
+    UPDATE dbo.Rooms SET hostelId = 1 WHERE hostelId IS NULL
+  `)
+
+  await query(`
+    UPDATE dbo.Users SET hostelId = 1 WHERE hostelId IS NULL AND role IN ('ADMIN', 'WARDEN', 'ACCOUNTANT', 'CARETAKER')
+  `)
+
+  await seedBedsForAllRooms()
 }
 
 // Auth endpoints
@@ -255,7 +393,7 @@ app.post('/api/auth/signup', async (req, res) => {
     }
 
     // Insert user
-    await query('INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, ?)', [name, email, password, role]);
+    await query('INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)', [name, email, password, role, role === 'STUDENT' ? null : 1]);
 
     // Add to respective tables
     if (role === 'STUDENT') {
@@ -342,7 +480,8 @@ app.post('/api/students', async (req, res) => {
       'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       [payload.name, payload.email, payload.phone || '', payload.registrationNumber || '', payload.department || '', yearOfStudy, payload.status || 'ACTIVE', payload.password || 'password']
     );
-    res.status(201).json({ ...payload, yearOfStudy });
+    const insertedStudent = await query('SELECT TOP 1 * FROM Students WHERE email = ? ORDER BY id DESC', [payload.email]);
+    res.status(201).json({ ...(insertedStudent && insertedStudent[0] ? insertedStudent[0] : payload), yearOfStudy });
   } catch (err) {
     console.error('Create student error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -380,6 +519,12 @@ app.put('/api/students/:id', async (req, res) => {
 app.delete('/api/students/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
+    await query('DELETE FROM StayRecords WHERE studentId = ?', [id]);
+    await query('DELETE FROM Allocations WHERE studentId = ?', [id]);
+    await query('DELETE FROM RoomRequests WHERE studentId = ?', [id]);
+    await query('DELETE FROM Maintenance WHERE studentId = ?', [id]);
+    await query('DELETE FROM Payments WHERE studentId = ?', [id]);
+    await query('DELETE FROM Invoices WHERE studentId = ?', [id]);
     await query('DELETE FROM Students WHERE id = ?', [id]);
     res.status(204).send();
   } catch (err) {
@@ -447,11 +592,18 @@ app.post('/api/rooms', async (req, res) => {
   try {
     const payload = req.body;
     const floor = toNullableInt(payload.floor);
+    const hostelId = toIntOrDefault(payload.hostelId, 1);
     await query(
-      'INSERT INTO Rooms (roomNumber, block, floor, capacity, type, rentalCost, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [payload.roomNumber, payload.block, floor, payload.capacity, payload.type, payload.rentalCost, payload.status || 'AVAILABLE']
+      'INSERT INTO Rooms (roomNumber, block, floor, capacity, type, rentalCost, status, hostelId) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [payload.roomNumber, payload.block, floor, payload.capacity, payload.type, payload.rentalCost, payload.status || 'AVAILABLE', hostelId]
     );
-    res.status(201).json({ ...payload, floor });
+    const insertedRoom = await query('SELECT TOP 1 * FROM Rooms WHERE roomNumber = ? AND block = ? AND floor = ? ORDER BY id DESC', [payload.roomNumber, payload.block, floor]);
+    if (insertedRoom && insertedRoom.length > 0) {
+      await ensureBedsForRoom(insertedRoom[0].id, toIntOrDefault(payload.capacity, 1));
+      res.status(201).json({ ...insertedRoom[0] });
+      return;
+    }
+    res.status(201).json({ ...payload, floor, hostelId });
   } catch (err) {
     console.error('Create room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -467,15 +619,16 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
     const studentId = 1; // This should come from decoded token
     
     // Check current allocations for the room
-    const currentAllocations = await query('SELECT COUNT(*) as count FROM Allocations WHERE roomId = ? AND status = ?', [roomId, 'ACTIVE']);
     const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
     
     if (!room || room.length === 0) {
       return res.status(404).json({ message: 'Room not found' });
     }
-    
-    const occupancy = currentAllocations[0].count;
-    if (occupancy >= room[0].capacity) {
+
+    await ensureBedsForRoom(roomId, room[0].capacity);
+    const bed = await getAvailableBed(roomId);
+    const bedId = getRowId(bed);
+    if (!bedId) {
       return res.status(400).json({ message: 'Room is at full capacity' });
     }
     
@@ -485,15 +638,17 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
       return res.status(400).json({ message: 'Student already has an active room allocation' });
     }
     
-    // Create allocation
-    await query('INSERT INTO Allocations (studentId, roomId, checkInDate, status) VALUES (?, ?, GETDATE(), ?)', [studentId, roomId, 'ACTIVE']);
+    // Create allocation and stay record using an available bed
+    await query('INSERT INTO Allocations (studentId, roomId, bedId, checkInDate, status) VALUES (?, ?, ?, GETDATE(), ?)', [studentId, roomId, bedId, 'ACTIVE']);
+    await query('INSERT INTO StayRecords (studentId, bedId, checkInDate, status) VALUES (?, ?, GETDATE(), ?)', [studentId, bedId, 'ACTIVE']);
+    await query('UPDATE Beds SET status = ? WHERE id = ?', ['OCCUPIED', bedId]);
     
     // Update room status if now full
-    const newOccupancy = occupancy + 1;
-    const newStatus = newOccupancy >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
+    const activeBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [roomId, 'OCCUPIED']);
+    const newStatus = Number(activeBeds?.[0]?.count || 0) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
     await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
     
-    res.json({ message: 'Room applied successfully' });
+    res.json({ message: 'Room applied successfully', bedId });
   } catch (err) {
     console.error('Apply room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -519,10 +674,11 @@ app.put('/api/rooms/:id', async (req, res) => {
     const id = Number(req.params.id);
     const payload = req.body;
     const floor = toNullableInt(payload.floor);
+    const hostelId = toIntOrDefault(payload.hostelId, 1);
 
     await query(
       `UPDATE Rooms 
-       SET roomNumber = ?, block = ?, floor = ?, capacity = ?, type = ?, rentalCost = ?, status = ?
+       SET roomNumber = ?, block = ?, floor = ?, capacity = ?, type = ?, rentalCost = ?, status = ?, hostelId = ?
        WHERE id = ?`,
       [
         payload.roomNumber,
@@ -532,11 +688,14 @@ app.put('/api/rooms/:id', async (req, res) => {
         payload.type,
         payload.rentalCost,
         payload.status || 'AVAILABLE',
+        hostelId,
         id
       ]
     );
 
-    res.json({ ...payload, id, floor });
+    await ensureBedsForRoom(id, toIntOrDefault(payload.capacity, 1));
+
+    res.json({ ...payload, id, floor, hostelId });
   } catch (err) {
     console.error('Update room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -545,6 +704,19 @@ app.put('/api/rooms/:id', async (req, res) => {
 app.delete('/api/rooms/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
+    const room = await getRoomById(id);
+    const beds = await query('SELECT id FROM Beds WHERE roomId = ?', [id]);
+    const bedIds = (beds || []).map((bed) => getRowId(bed)).filter((bedId) => bedId !== null);
+
+    if (bedIds.length > 0) {
+      const bedIdList = bedIds.join(',');
+      await query(`DELETE FROM StayRecords WHERE bedId IN (${bedIdList})`);
+      await query(`DELETE FROM Allocations WHERE bedId IN (${bedIdList})`);
+    }
+
+    await query('DELETE FROM RoomRequests WHERE roomId = ?', [id]);
+    await query('DELETE FROM Maintenance WHERE roomId = ?', [id]);
+    await query('DELETE FROM Beds WHERE roomId = ?', [id]);
     await query('DELETE FROM Rooms WHERE id = ?', [id]);
     res.status(204).send();
   } catch (err) {
@@ -553,13 +725,37 @@ app.delete('/api/rooms/:id', async (req, res) => {
   }
 });
 
-// Complaints (using Maintenance table)
+// Complaints (mapped to Maintenance table for compatibility with the current UI)
 app.get('/api/complaints', async (req, res) => {
   try {
-    const result = await query('SELECT * FROM Maintenance');
+    const result = await query(`
+      SELECT m.id, m.description, m.room, m.roomId, m.studentId, m.staffId, m.priority, m.status, m.reportedDate, m.assignedTo,
+             s.name AS studentName,
+             st.name AS staffName,
+             r.roomNumber
+      FROM Maintenance m
+      LEFT JOIN Students s ON m.studentId = s.id
+      LEFT JOIN Users st ON m.staffId = st.id OR m.assignedTo = st.id
+      LEFT JOIN Rooms r ON m.roomId = r.id
+      ORDER BY m.reportedDate DESC
+    `);
     res.json(result);
   } catch (err) {
     console.error('Get complaints error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/complaints/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+    if (!result || result.length === 0) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+    res.json(result[0]);
+  } catch (err) {
+    console.error('Get complaint detail error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -568,13 +764,52 @@ app.post('/api/complaints', async (req, res) => {
   try {
     const payload = req.body;
     const reportedDate = new Date().toISOString();
+    const roomId = toNullableInt(payload.roomId);
+    const studentId = toNullableInt(payload.studentId);
+    const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
+    const linkedRoom = roomId ? await getRoomById(roomId) : null;
+    const roomName = payload.room || linkedRoom?.roomNumber || '';
     await query(
-      'INSERT INTO Maintenance (description, room, priority, status, reportedDate, assignedTo) VALUES (?, ?, ?, ?, ?, ?)',
-      [payload.description, payload.room || '', payload.priority || 'MEDIUM', 'PENDING', reportedDate, payload.assignedTo || null]
+      'INSERT INTO Maintenance (description, room, roomId, studentId, staffId, priority, status, reportedDate, assignedTo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', 'PENDING', reportedDate, staffId || null]
     );
-    res.status(201).json(payload);
+    const created = await query('SELECT TOP 1 * FROM Maintenance ORDER BY id DESC');
+    res.status(201).json({ ...(created && created[0] ? created[0] : payload), room: roomName, roomId, studentId, staffId });
   } catch (err) {
     console.error('Create complaint error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/api/complaints/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const payload = req.body;
+    const roomId = toNullableInt(payload.roomId);
+    const studentId = toNullableInt(payload.studentId);
+    const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
+    const linkedRoom = roomId ? await getRoomById(roomId) : null;
+    const roomName = payload.room || linkedRoom?.roomNumber || '';
+
+    await query(
+      'UPDATE Maintenance SET description = ?, room = ?, roomId = ?, studentId = ?, staffId = ?, priority = ?, status = ?, assignedTo = ? WHERE id = ?',
+      [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', payload.status || 'PENDING', staffId || null, id]
+    );
+
+    res.json({ ...payload, id, room: roomName, roomId, studentId, staffId });
+  } catch (err) {
+    console.error('Update complaint error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.delete('/api/complaints/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await query('DELETE FROM Maintenance WHERE id = ?', [id]);
+    res.status(204).send();
+  } catch (err) {
+    console.error('Delete complaint error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -582,7 +817,17 @@ app.post('/api/complaints', async (req, res) => {
 // Maintenance (module routes expected by frontend)
 app.get('/api/maintenance', async (req, res) => {
   try {
-    const result = await query('SELECT * FROM Maintenance ORDER BY reportedDate DESC');
+    const result = await query(`
+      SELECT m.id, m.description, m.room, m.roomId, m.studentId, m.staffId, m.priority, m.status, m.reportedDate, m.assignedTo,
+             s.name AS studentName,
+             st.name AS staffName,
+             r.roomNumber
+      FROM Maintenance m
+      LEFT JOIN Students s ON m.studentId = s.id
+      LEFT JOIN Users st ON m.staffId = st.id OR m.assignedTo = st.id
+      LEFT JOIN Rooms r ON m.roomId = r.id
+      ORDER BY m.reportedDate DESC
+    `);
     res.json(result);
   } catch (err) {
     console.error('Get maintenance error:', err);
@@ -608,11 +853,17 @@ app.post('/api/maintenance', async (req, res) => {
   try {
     const payload = req.body;
     const reportedDate = new Date().toISOString();
+    const roomId = toNullableInt(payload.roomId);
+    const studentId = toNullableInt(payload.studentId);
+    const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
+    const linkedRoom = roomId ? await getRoomById(roomId) : null;
+    const roomName = payload.room || linkedRoom?.roomNumber || '';
     await query(
-      'INSERT INTO Maintenance (description, room, priority, status, reportedDate, assignedTo) VALUES (?, ?, ?, ?, ?, ?)',
-      [payload.description, payload.room || '', payload.priority || 'MEDIUM', payload.status || 'PENDING', reportedDate, payload.assignedTo || null]
+      'INSERT INTO Maintenance (description, room, roomId, studentId, staffId, priority, status, reportedDate, assignedTo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', payload.status || 'PENDING', reportedDate, staffId || null]
     );
-    res.status(201).json(payload);
+    const created = await query('SELECT TOP 1 * FROM Maintenance ORDER BY id DESC');
+    res.status(201).json({ ...(created && created[0] ? created[0] : payload), room: roomName, roomId, studentId, staffId });
   } catch (err) {
     console.error('Create maintenance error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -623,11 +874,16 @@ app.put('/api/maintenance/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
     const payload = req.body;
+    const roomId = toNullableInt(payload.roomId);
+    const studentId = toNullableInt(payload.studentId);
+    const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
+    const linkedRoom = roomId ? await getRoomById(roomId) : null;
+    const roomName = payload.room || linkedRoom?.roomNumber || '';
     await query(
-      'UPDATE Maintenance SET description = ?, room = ?, priority = ?, status = ?, assignedTo = ? WHERE id = ?',
-      [payload.description, payload.room || '', payload.priority || 'MEDIUM', payload.status || 'PENDING', payload.assignedTo || null, id]
+      'UPDATE Maintenance SET description = ?, room = ?, roomId = ?, studentId = ?, staffId = ?, priority = ?, status = ?, assignedTo = ? WHERE id = ?',
+      [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', payload.status || 'PENDING', staffId || null, id]
     );
-    res.json({ ...payload, id });
+    res.json({ ...payload, id, room: roomName, roomId, studentId, staffId });
   } catch (err) {
     console.error('Update maintenance error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -815,10 +1071,10 @@ app.post('/api/staff', async (req, res) => {
     }
 
     await query(
-      'INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, ?)',
-      [payload.name, payload.email, payload.password || 'password', role]
+      'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
+      [payload.name, payload.email, payload.password || 'password', role, toIntOrDefault(payload.hostelId, 1)]
     );
-    res.status(201).json({ ...payload, role });
+    res.status(201).json({ ...payload, role, hostelId: toIntOrDefault(payload.hostelId, 1) });
   } catch (err) {
     console.error('Create staff error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -831,10 +1087,10 @@ app.put('/api/staff/:id', async (req, res) => {
     const payload = req.body;
     const role = payload.role === 'CARETAKER' ? 'CARETAKER' : 'WARDEN';
     await query(
-      'UPDATE Users SET name = ?, email = ?, role = ? WHERE id = ?',
-      [payload.name, payload.email, role, id]
+      'UPDATE Users SET name = ?, email = ?, role = ?, hostelId = ? WHERE id = ?',
+      [payload.name, payload.email, role, toIntOrDefault(payload.hostelId, 1), id]
     );
-    res.json({ ...payload, id, role });
+    res.json({ ...payload, id, role, hostelId: toIntOrDefault(payload.hostelId, 1) });
   } catch (err) {
     console.error('Update staff error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -958,12 +1214,14 @@ app.get('/api/reports/occupancy', async (req, res) => {
 app.get('/api/allocations', async (req, res) => {
   try {
     const result = await query(`
-      SELECT a.id, a.studentId, a.roomId, a.checkInDate, a.status,
+      SELECT a.id, a.studentId, a.roomId, a.bedId, a.checkInDate, a.status,
              s.name as studentName, s.registrationNumber, s.email as studentEmail,
-             r.roomNumber, r.block, r.floor, r.type
+             r.roomNumber, r.block, r.floor, r.type,
+             b.bedNumber
       FROM Allocations a
       JOIN Students s ON a.studentId = s.id
       JOIN Rooms r ON a.roomId = r.id
+      LEFT JOIN Beds b ON a.bedId = b.id
       ORDER BY a.checkInDate DESC
     `);
     res.json(result);
@@ -977,12 +1235,14 @@ app.get('/api/allocations/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
     const result = await query(`
-      SELECT a.id, a.studentId, a.roomId, a.checkInDate, a.checkOutDate, a.status,
+      SELECT a.id, a.studentId, a.roomId, a.bedId, a.checkInDate, a.checkOutDate, a.status,
              s.name as studentName, s.registrationNumber, s.email as studentEmail,
-             r.roomNumber, r.block, r.floor, r.type
+             r.roomNumber, r.block, r.floor, r.type,
+             b.bedNumber
       FROM Allocations a
       JOIN Students s ON a.studentId = s.id
       JOIN Rooms r ON a.roomId = r.id
+      LEFT JOIN Beds b ON a.bedId = b.id
       WHERE a.id = ?
     `, [id]);
 
@@ -1010,29 +1270,44 @@ app.post('/api/allocations', async (req, res) => {
       return res.status(400).json({ message: 'Student already has an active room allocation' });
     }
     
-    // Check room capacity
-    const currentAllocations = await query('SELECT COUNT(*) as count FROM Allocations WHERE roomId = ? AND status = ?', [roomId, 'ACTIVE']);
     const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
     
     if (!room || room.length === 0) {
       return res.status(404).json({ message: 'Room not found' });
     }
-    
-    const occupancy = currentAllocations[0].count;
-    if (occupancy >= room[0].capacity) {
+
+    await ensureBedsForRoom(roomId, room[0].capacity);
+    const bed = await getAvailableBed(roomId);
+    const bedId = getRowId(bed);
+    if (!bedId) {
       return res.status(400).json({ message: 'Room is at full capacity' });
     }
     
     // Create allocation
     const checkIn = allocated_date || new Date().toISOString();
-    await query('INSERT INTO Allocations (studentId, roomId, checkInDate, status) VALUES (?, ?, ?, ?)', [studentId, roomId, checkIn, status]);
+    await query('INSERT INTO Allocations (studentId, roomId, bedId, checkInDate, status) VALUES (?, ?, ?, ?, ?)', [studentId, roomId, bedId, checkIn, status]);
+    await query('INSERT INTO StayRecords (studentId, bedId, checkInDate, status) VALUES (?, ?, ?, ?)', [studentId, bedId, checkIn, status]);
+    await query('UPDATE Beds SET status = ? WHERE id = ?', [status === 'ACTIVE' ? 'OCCUPIED' : 'AVAILABLE', bedId]);
     
     // Update room status if now full
-    const newOccupancy = occupancy + 1;
-    const newStatus = newOccupancy >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
+    const activeBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [roomId, 'OCCUPIED']);
+    const newStatus = Number(activeBeds?.[0]?.count || 0) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
     await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
     
-    res.status(201).json({ message: 'Allocation created successfully' });
+    const createdAllocation = await query(
+      `SELECT TOP 1 a.id, a.studentId, a.roomId, a.bedId, a.checkInDate, a.checkOutDate, a.status,
+              b.bedNumber
+       FROM Allocations a
+       LEFT JOIN Beds b ON a.bedId = b.id
+       WHERE a.studentId = ? AND a.roomId = ? AND a.bedId = ?
+       ORDER BY a.id DESC`,
+      [studentId, roomId, bedId]
+    );
+    res.status(201).json({
+      ...(createdAllocation && createdAllocation[0] ? createdAllocation[0] : {}),
+      message: 'Allocation created successfully',
+      bedId,
+    });
   } catch (err) {
     console.error('Create allocation error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1061,7 +1336,8 @@ app.put('/api/allocations/:id', async (req, res) => {
       ]
     );
 
-    res.json({ id, studentId, roomId, checkInDate, checkOutDate, status });
+    const currentBed = existing[0].bedId ?? null;
+    res.json({ id, studentId: studentId ?? existing[0].studentId, roomId: roomId ?? existing[0].roomId, checkInDate, checkOutDate, status, bedId: currentBed });
   } catch (err) {
     console.error('Update allocation error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1078,18 +1354,18 @@ app.delete('/api/allocations/:id', async (req, res) => {
       return res.status(404).json({ message: 'Allocation not found' });
     }
     
-    const { roomId } = allocation[0];
+    const { roomId, studentId, bedId } = allocation[0];
     
+    if (bedId) {
+      await closeActiveStayRecord(studentId, bedId);
+      await query('UPDATE Beds SET status = ? WHERE id = ?', ['AVAILABLE', bedId]);
+    }
+
     // Delete allocation
     await query('DELETE FROM Allocations WHERE id = ?', [id]);
     
     // Update room status
-    const currentAllocations = await query('SELECT COUNT(*) as count FROM Allocations WHERE roomId = ? AND status = ?', [roomId, 'ACTIVE']);
-    const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
-    
-    const newOccupancy = currentAllocations[0].count;
-    const newStatus = newOccupancy >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
-    await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
+    await syncRoomStatus(roomId);
     
     res.status(204).send();
   } catch (err) {
