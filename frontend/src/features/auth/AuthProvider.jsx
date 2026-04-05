@@ -16,9 +16,14 @@ export const AuthProvider = ({ children }) => {
     const checkAuth = async () => {
       try {
         const token = localStorage.getItem(STORAGE_KEYS.TOKEN)
+        const storedUser = localStorage.getItem(STORAGE_KEYS.USER)
         if (token) {
-          const currentUser = await getMeAPI()
-          setUser(currentUser)
+          if (storedUser) {
+            setUser(JSON.parse(storedUser))
+          } else {
+            const currentUser = await getMeAPI()
+            setUser(currentUser)
+          }
           setIsAuthenticated(true)
         }
       } catch (error) {

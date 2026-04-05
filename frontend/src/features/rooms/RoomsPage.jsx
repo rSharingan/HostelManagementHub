@@ -1,8 +1,8 @@
 // path: src/features/rooms/RoomsPage.jsx
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { Plus, Trash2, Edit2, CheckCircle } from 'lucide-react'
-import { useRooms, useDeleteRoom, useApplyRoom } from './hooks'
+import { useRooms, useDeleteRoom } from './hooks'
 import { PageHeader } from '../../components/common/PageHeader'
 import { DataTable } from '../../components/common/DataTable'
 import { Button } from '../../components/ui/Button'
@@ -12,14 +12,36 @@ import { Badge } from '../../components/ui/Badge'
 import { formatCurrency } from '../../lib/utils'
 import { toast } from 'sonner'
 import { useAuth } from '../auth/hooks'
+import { useCreateRoomRequest, useRoomRequests } from '../roomRequests/hooks'
 
 export const RoomsPage = () => {
   const navigate = useNavigate()
   const { data: rooms = [], isLoading, error } = useRooms()
   const deleteRoom = useDeleteRoom()
-  const applyRoom = useApplyRoom()
   const { user } = useAuth()
   const [deleteId, setDeleteId] = useState(null)
+  const [applyingRoomId, setApplyingRoomId] = useState(null)
+  const [optimisticRequestedRoomIds, setOptimisticRequestedRoomIds] = useState([])
+  const createRoomRequest = useCreateRoomRequest()
+  const { data: roomRequests = [] } = useRoomRequests(undefined, user?.role === 'STUDENT')
+
+  const requestedRoomIds = useMemo(() => {
+    if (user?.role !== 'STUDENT') {
+      return new Set()
+    }
+
+    const roomIds = roomRequests
+      .filter((request) => String(request.studentId) === String(user?.id) && request.status !== 'REJECTED')
+      .map((request) => String(request.roomId))
+
+    optimisticRequestedRoomIds.forEach((roomId) => {
+      if (!roomIds.includes(String(roomId))) {
+        roomIds.push(String(roomId))
+      }
+    })
+
+    return new Set(roomIds)
+  }, [optimisticRequestedRoomIds, roomRequests, user?.id, user?.role])
 
   const handleDelete = async () => {
     try {
@@ -31,12 +53,21 @@ export const RoomsPage = () => {
     }
   }
 
-  const handleApply = async (roomId) => {
+  const handleApply = async (room) => {
     try {
-      await applyRoom.mutateAsync(roomId)
-      toast.success('Room applied successfully')
+      setApplyingRoomId(room.id)
+      await createRoomRequest.mutateAsync({
+        studentId: user.id,
+        roomId: room.id,
+      })
+      setOptimisticRequestedRoomIds((current) =>
+        current.includes(String(room.id)) ? current : [...current, String(room.id)],
+      )
+      toast.success('Room request submitted successfully')
     } catch (error) {
       toast.error('Failed to apply for room')
+    } finally {
+      setApplyingRoomId(null)
     }
   }
 
@@ -102,6 +133,7 @@ export const RoomsPage = () => {
       cell: ({ row }) => {
         const isAdmin = user?.role === 'ADMIN'
         const isAvailable = row.original.status === 'AVAILABLE'
+          const isRequested = requestedRoomIds.has(String(row.original.id))
         
         if (isAdmin) {
           return (
@@ -127,12 +159,14 @@ export const RoomsPage = () => {
           // Student view
           return (
             <div className="flex gap-2">
-              {isAvailable ? (
+              {isRequested ? (
+                <Badge variant="warning">Requested</Badge>
+              ) : isAvailable ? (
                 <Button
                   variant="default"
                   size="sm"
-                  onClick={() => handleApply(row.original.id)}
-                  disabled={applyRoom.isPending}
+                  onClick={() => handleApply(row.original)}
+                  disabled={applyingRoomId === row.original.id || createRoomRequest.isPending}
                   className="gap-2"
                 >
                   <CheckCircle size={16} />

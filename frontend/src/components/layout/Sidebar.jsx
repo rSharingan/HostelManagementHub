@@ -1,7 +1,7 @@
 // path: src/components/layout/Sidebar.jsx
 import { useState, useEffect } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { Menu, X, LogOut, Settings, BarChart3, Users, Home, DollarSign, Wrench, ClipboardList } from 'lucide-react'
+import { Menu, X, LogOut, Settings, BarChart3, Users, Home, DollarSign, Wrench, ClipboardList, ClipboardCheck } from 'lucide-react'
 import { useAuth } from '../../features/auth/hooks'
 import { ROLES } from '../../lib/constants'
 import { cn } from '../../lib/utils'
@@ -13,6 +13,7 @@ const navigationItems = [
   { label: 'Allocations', icon: DollarSign, href: '/allocations', roles: [ROLES.ADMIN, ROLES.WARDEN] },
   { label: 'Invoices', icon: DollarSign, href: '/fees/invoices', roles: [ROLES.ADMIN] },
   { label: 'Payments', icon: DollarSign, href: '/fees/payments', roles: [ROLES.ADMIN] },
+  { label: 'Room Requests', icon: ClipboardCheck, href: '/room-requests', roles: [ROLES.ADMIN] },
   { label: 'Staff', icon: Users, href: '/staff', roles: [ROLES.ADMIN] },
   { label: 'Maintenance', icon: Wrench, href: '/maintenance', roles: [ROLES.ADMIN, ROLES.WARDEN, ROLES.CARETAKER] },
   { label: 'Reports', icon: BarChart3, href: '/reports/occupancy', roles: [ROLES.ADMIN, ROLES.WARDEN] },

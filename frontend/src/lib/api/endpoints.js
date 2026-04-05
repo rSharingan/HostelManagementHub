@@ -21,6 +21,11 @@ export const API_ENDPOINTS = {
     DELETE: (id) => `/rooms/${id}`,
     APPLY: (id) => `/rooms/${id}/apply`,
   },
+  ROOM_REQUESTS: {
+    LIST: '/room-requests',
+    CREATE: '/room-requests',
+    APPROVE: (id) => `/room-requests/${id}/approve`,
+  },
   ALLOCATIONS: {
     LIST: '/allocations',
     DETAIL: (id) => `/allocations/${id}`,

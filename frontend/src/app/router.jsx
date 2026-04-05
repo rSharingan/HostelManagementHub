@@ -17,6 +17,7 @@ import { InvoicesPage } from '../features/fees/InvoicesPage'
 import { PaymentsPage } from '../features/fees/PaymentsPage'
 import { StaffPage } from '../features/staff/StaffPage'
 import { MaintenancePage } from '../features/maintenance/MaintenancePage'
+import { RoomRequestsPage } from '../features/roomRequests/RoomRequestsPage'
 import { OccupancyReportPage } from '../features/reports/OccupancyReportPage'
 import { DuesReportPage } from '../features/reports/DuesReportPage'
 import { MaintenanceReportPage } from '../features/reports/MaintenanceReportPage'
@@ -137,6 +138,16 @@ export const router = createBrowserRouter([
       <RequireAuth>
         <AppLayout>
           <StaffPage />
+        </AppLayout>
+      </RequireAuth>
+    ),
+  },
+  {
+    path: '/room-requests',
+    element: (
+      <RequireAuth requiredRoles={['ADMIN']}>
+        <AppLayout>
+          <RoomRequestsPage />
         </AppLayout>
       </RequireAuth>
     ),
