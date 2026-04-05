@@ -69,6 +69,24 @@ async function ensureColumnExists(table, column, definition) {
   `);
 }
 
+function toNullableInt(value) {
+  if (value === null || value === undefined || value === '') {
+    return null;
+  }
+
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return Math.trunc(value);
+  }
+
+  const match = String(value).match(/-?\d+/);
+  return match ? Number.parseInt(match[0], 10) : null;
+}
+
+function toIntOrDefault(value, fallback) {
+  const parsed = toNullableInt(value);
+  return parsed === null ? fallback : parsed;
+}
+
 async function ensureFeatureTables() {
   await query(`
     IF OBJECT_ID('dbo.Users', 'U') IS NULL
@@ -153,6 +171,9 @@ async function ensureFeatureTables() {
       )
     END
   `)
+
+  // Backward compatibility: older manual scripts used requestDate instead of requestedDate.
+  await ensureColumnExists('RoomRequests', 'requestedDate', 'requestedDate DATETIME2 DEFAULT GETDATE()')
 
   await query(`
     IF OBJECT_ID('dbo.OccupancyReport', 'U') IS NULL
@@ -316,13 +337,53 @@ app.get('/api/students/:id', async (req, res) => {
 app.post('/api/students', async (req, res) => {
   try {
     const payload = req.body;
+    const yearOfStudy = toIntOrDefault(payload.yearOfStudy, 1);
     await query(
       'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [payload.name, payload.email, payload.phone || '', payload.registrationNumber || '', payload.department || '', payload.yearOfStudy || 1, payload.status || 'ACTIVE', payload.password || 'password']
+      [payload.name, payload.email, payload.phone || '', payload.registrationNumber || '', payload.department || '', yearOfStudy, payload.status || 'ACTIVE', payload.password || 'password']
     );
-    res.status(201).json(payload);
+    res.status(201).json({ ...payload, yearOfStudy });
   } catch (err) {
     console.error('Create student error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/api/students/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const payload = req.body;
+    const yearOfStudy = toIntOrDefault(payload.yearOfStudy, 1);
+    await query(
+      `UPDATE Students
+       SET name = ?, email = ?, phone = ?, registrationNumber = ?, department = ?, yearOfStudy = ?, status = ?, password = ?
+       WHERE id = ?`,
+      [
+        payload.name,
+        payload.email,
+        payload.phone || '',
+        payload.registrationNumber || '',
+        payload.department || '',
+        yearOfStudy,
+        payload.status || 'ACTIVE',
+        payload.password || 'password',
+        id,
+      ]
+    );
+    res.json({ ...payload, id, yearOfStudy });
+  } catch (err) {
+    console.error('Update student error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.delete('/api/students/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await query('DELETE FROM Students WHERE id = ?', [id]);
+    res.status(204).send();
+  } catch (err) {
+    console.error('Delete student error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -385,11 +446,12 @@ app.get('/api/rooms', async (req, res) => {
 app.post('/api/rooms', async (req, res) => {
   try {
     const payload = req.body;
+    const floor = toNullableInt(payload.floor);
     await query(
       'INSERT INTO Rooms (roomNumber, block, floor, capacity, type, rentalCost, status) VALUES (?, ?, ?, ?, ?, ?, ?)',
-      [payload.roomNumber, payload.block, payload.floor, payload.capacity, payload.type, payload.rentalCost, payload.status || 'AVAILABLE']
+      [payload.roomNumber, payload.block, floor, payload.capacity, payload.type, payload.rentalCost, payload.status || 'AVAILABLE']
     );
-    res.status(201).json(payload);
+    res.status(201).json({ ...payload, floor });
   } catch (err) {
     console.error('Create room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -437,10 +499,26 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+
+app.get('/api/rooms/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await query('SELECT * FROM Rooms WHERE id = ?', [id]);
+    if (!result || result.length === 0) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+    res.json(result[0]);
+  } catch (err) {
+    console.error('Get room detail error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 app.put('/api/rooms/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
     const payload = req.body;
+    const floor = toNullableInt(payload.floor);
 
     await query(
       `UPDATE Rooms 
@@ -449,7 +527,7 @@ app.put('/api/rooms/:id', async (req, res) => {
       [
         payload.roomNumber,
         payload.block,
-        payload.floor,
+        floor,
         payload.capacity,
         payload.type,
         payload.rentalCost,
@@ -458,7 +536,7 @@ app.put('/api/rooms/:id', async (req, res) => {
       ]
     );
 
-    res.json({ ...payload, id });
+    res.json({ ...payload, id, floor });
   } catch (err) {
     console.error('Update room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -895,6 +973,29 @@ app.get('/api/allocations', async (req, res) => {
   }
 });
 
+app.get('/api/allocations/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await query(`
+      SELECT a.id, a.studentId, a.roomId, a.checkInDate, a.checkOutDate, a.status,
+             s.name as studentName, s.registrationNumber, s.email as studentEmail,
+             r.roomNumber, r.block, r.floor, r.type
+      FROM Allocations a
+      JOIN Students s ON a.studentId = s.id
+      JOIN Rooms r ON a.roomId = r.id
+      WHERE a.id = ?
+    `, [id]);
+
+    if (!result || result.length === 0) {
+      return res.status(404).json({ message: 'Not found' });
+    }
+    res.json(result[0]);
+  } catch (err) {
+    console.error('Get allocation detail error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 app.post('/api/allocations', async (req, res) => {
   try {
     const { studentId, roomId, allocated_date, status = 'ACTIVE' } = req.body;
@@ -934,6 +1035,35 @@ app.post('/api/allocations', async (req, res) => {
     res.status(201).json({ message: 'Allocation created successfully' });
   } catch (err) {
     console.error('Create allocation error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.put('/api/allocations/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { studentId, roomId, checkInDate, checkOutDate, status = 'ACTIVE' } = req.body;
+
+    const existing = await query('SELECT * FROM Allocations WHERE id = ?', [id]);
+    if (!existing || existing.length === 0) {
+      return res.status(404).json({ message: 'Allocation not found' });
+    }
+
+    await query(
+      'UPDATE Allocations SET studentId = ?, roomId = ?, checkInDate = ?, checkOutDate = ?, status = ? WHERE id = ?',
+      [
+        studentId ?? existing[0].studentId,
+        roomId ?? existing[0].roomId,
+        checkInDate ?? existing[0].checkInDate,
+        checkOutDate ?? existing[0].checkOutDate ?? null,
+        status,
+        id,
+      ]
+    );
+
+    res.json({ id, studentId, roomId, checkInDate, checkOutDate, status });
+  } catch (err) {
+    console.error('Update allocation error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
