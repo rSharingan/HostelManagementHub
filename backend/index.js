@@ -29,7 +29,6 @@ const connectionString = getConnectionString();
 app.use(cors());
 app.use(express.json());
 
-// Database connection
 let conn;
 
 async function connectDB() {
@@ -49,7 +48,6 @@ async function connectDB() {
   }
 }
 
-// Simple query helper
 async function query(sql, params = []) {
   return new Promise((resolve, reject) => {
     conn.query(sql, params, (err, result) => {
@@ -97,21 +95,17 @@ async function ensureFeatureTables() {
   )
 }
 
-// Auth endpoints
 app.post('/api/auth/signup', async (req, res) => {
   try {
     const { name, email, password, role, ...extra } = req.body;
 
-    // Check if user already exists
     const existing = await query('SELECT * FROM Users WHERE email = ?', [email]);
     if (existing && existing.length > 0) {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    // Insert user
     await query('INSERT INTO Users (name, email, password, role) VALUES (?, ?, ?, ?)', [name, email, password, role]);
 
-    // Add to respective tables
     if (role === 'STUDENT') {
       await query(
         'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
@@ -164,7 +158,6 @@ app.get('/api/health/db', async (req, res) => {
   }
 });
 
-// Students CRUD
 app.get('/api/students', async (req, res) => {
   try {
     const result = await query('SELECT * FROM Students');
@@ -202,20 +195,16 @@ app.post('/api/students', async (req, res) => {
   }
 });
 
-// Rooms CRUD
 app.get('/api/rooms', async (req, res) => {
   try {
     const auth = req.headers.authorization || '';
     const token = auth.replace('Bearer ', '');
-    // For now, assume token contains user info, but we'll use a simple check
-    // In a real app, you'd decode the JWT token to get user info
-    const isAdmin = token.includes('ADMIN'); // Simple check for demo
+    const isAdmin = token.includes('ADMIN');
     
     let queryStr = 'SELECT * FROM Rooms';
     let params = [];
     
     if (!isAdmin) {
-      // For students, only show available rooms
       queryStr += ' WHERE status = ?';
       params.push('AVAILABLE');
     }
@@ -248,16 +237,13 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
     const auth = req.headers.authorization || '';
     const token = auth.replace('Bearer ', '');
     
-    // Get current user (for demo, assume student id is 1, in real app decode token)
-    const studentId = 1; // This should come from decoded token
+    const studentId = 1;
     
-    // Check if room is available
     const roomCheck = await query('SELECT * FROM Rooms WHERE id = ? AND status = ?', [roomId, 'AVAILABLE']);
     if (!roomCheck || roomCheck.length === 0) {
       return res.status(400).json({ message: 'Room is not available' });
     }
     
-    // Update room to occupied and assign to student
     await query('UPDATE Rooms SET status = ?, studentId = ? WHERE id = ?', ['OCCUPIED', studentId, roomId]);
     
     res.json({ message: 'Room applied successfully' });
@@ -267,7 +253,6 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
   }
 });
 
-// Complaints (using Maintenance table)
 app.get('/api/complaints', async (req, res) => {
   try {
     const result = await query('SELECT * FROM Maintenance');
@@ -293,7 +278,6 @@ app.post('/api/complaints', async (req, res) => {
   }
 });
 
-// Maintenance (module routes expected by frontend)
 app.get('/api/maintenance', async (req, res) => {
   try {
     const result = await query('SELECT * FROM Maintenance ORDER BY reportedDate DESC');
@@ -359,7 +343,6 @@ app.delete('/api/maintenance/:id', async (req, res) => {
   }
 });
 
-// Payments
 app.get('/api/payments', async (req, res) => {
   try {
     const result = await query('SELECT * FROM Payments');
@@ -385,7 +368,6 @@ app.post('/api/payments', async (req, res) => {
   }
 });
 
-// Fees module routes expected by frontend
 app.get('/api/fees/invoices', async (req, res) => {
   try {
     const result = await query('SELECT * FROM Invoices ORDER BY dueDate DESC');
@@ -494,7 +476,6 @@ app.put('/api/fees/payments/:id', async (req, res) => {
   }
 });
 
-// Staff module routes expected by frontend
 app.get('/api/staff', async (req, res) => {
   try {
     const result = await query("SELECT id, name, email, role FROM Users WHERE role IN ('WARDEN', 'CARETAKER')");
@@ -566,7 +547,6 @@ app.delete('/api/staff/:id', async (req, res) => {
   }
 });
 
-// Users
 app.get('/api/users', async (req, res) => {
   try {
     const result = await query("SELECT * FROM Users WHERE role != 'ADMIN'");
@@ -577,7 +557,6 @@ app.get('/api/users', async (req, res) => {
   }
 });
 
-// Start server
 async function startServer() {
   const connected = await connectDB();
   if (!connected) {

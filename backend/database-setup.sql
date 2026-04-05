@@ -1,5 +1,4 @@
--- Hostel Management System Database Setup
--- Run this script in your MS SQL Server to create the database and tables
+
 
 CREATE DATABASE HostelManagement;
 GO
@@ -65,13 +64,13 @@ CREATE TABLE Payments (
     reference VARCHAR(100)
 );
 
--- Insert default admin user
+
 INSERT INTO Users (name, email, password, role) VALUES ('Admin', 'admin@hostel.com', 'password', 'ADMIN');
 
--- Insert sample student
+
 INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password)
 VALUES ('Alice Johnson', 'alice@example.com', '1234567890', 'REG-001', 'Computer Science', 2, 'ACTIVE', 'password');
 
--- Insert sample room
+
 INSERT INTO Rooms (roomNumber, block, floor, capacity, type, rentalCost, status)
 VALUES ('101', 'A', 1, 2, 'Single', 500.00, 'AVAILABLE');
