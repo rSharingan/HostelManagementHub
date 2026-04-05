@@ -15,7 +15,7 @@ import { useAuth } from '../auth/hooks'
 
 export const RoomsPage = () => {
   const navigate = useNavigate()
-  const { data: rooms = [], isLoading } = useRooms()
+  const { data: rooms = [], isLoading, error } = useRooms()
   const deleteRoom = useDeleteRoom()
   const applyRoom = useApplyRoom()
   const { user } = useAuth()
@@ -172,6 +172,11 @@ export const RoomsPage = () => {
 
       {isLoading ? (
         <TableSkeletons />
+      ) : error ? (
+        <div className="text-center py-8">
+          <p className="text-red-600">Failed to load rooms. Please check your database connection.</p>
+          <p className="text-sm text-gray-500 mt-2">{error.message}</p>
+        </div>
       ) : (
         <DataTable
           columns={columns}

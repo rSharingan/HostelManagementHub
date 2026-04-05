@@ -45,6 +45,7 @@ async function connectDB() {
     return true;
   } catch (err) {
     console.error('✗ Database connection failed:', err.message);
+    console.error('Please check your database server and connection string.');
     return false;
   }
 }
@@ -57,6 +58,15 @@ async function query(sql, params = []) {
       else resolve(result);
     });
   });
+}
+
+async function ensureColumnExists(table, column, definition) {
+  await query(`
+    IF COL_LENGTH('dbo.${table}', '${column}') IS NULL
+    BEGIN
+      ALTER TABLE dbo.${table} ADD ${definition}
+    END
+  `);
 }
 
 async function ensureFeatureTables() {
@@ -74,6 +84,121 @@ async function ensureFeatureTables() {
   `)
 
   await query(`
+    IF OBJECT_ID('dbo.Students', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Students (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        name NVARCHAR(255) NOT NULL,
+        email NVARCHAR(255) NOT NULL,
+        phone NVARCHAR(20) NULL,
+        registrationNumber NVARCHAR(50) NULL,
+        department NVARCHAR(100) NULL,
+        yearOfStudy INT NOT NULL DEFAULT 1,
+        status NVARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+        password NVARCHAR(255) NOT NULL
+      )
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.Rooms', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Rooms (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        roomNumber NVARCHAR(50) NOT NULL,
+        block NVARCHAR(50) NULL,
+        floor INT NULL,
+        capacity INT NOT NULL DEFAULT 1,
+        type NVARCHAR(100) NULL,
+        rentalCost DECIMAL(10,2) NULL,
+        status NVARCHAR(50) NOT NULL DEFAULT 'AVAILABLE'
+      )
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.Allocations', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Allocations (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        studentId INT NOT NULL,
+        roomId INT NOT NULL,
+        checkInDate DATETIME2 DEFAULT GETDATE(),
+        checkOutDate DATETIME2 NULL,
+        status NVARCHAR(50) NOT NULL DEFAULT 'ACTIVE',
+        FOREIGN KEY (studentId) REFERENCES dbo.Students(id),
+        FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)
+      )
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.Allocations', 'U') IS NOT NULL AND COL_LENGTH('dbo.Allocations', 'checkOutDate') IS NULL
+    BEGIN
+      ALTER TABLE dbo.Allocations ADD checkOutDate DATETIME2 NULL
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.RoomRequests', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.RoomRequests (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        studentId INT NOT NULL,
+        roomId INT NOT NULL,
+        status NVARCHAR(50) NOT NULL DEFAULT 'PENDING',
+        requestedDate DATETIME2 DEFAULT GETDATE(),
+        FOREIGN KEY (studentId) REFERENCES dbo.Students(id),
+        FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)
+      )
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.OccupancyReport', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.OccupancyReport (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        roomId INT NOT NULL,
+        occupiedBeds INT NOT NULL,
+        totalBeds INT NOT NULL,
+        reportDate DATETIME2 DEFAULT GETDATE(),
+        FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)
+      )
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.Maintenance', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Maintenance (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        description NVARCHAR(MAX) NOT NULL,
+        room NVARCHAR(50) NULL,
+        priority NVARCHAR(50) DEFAULT 'MEDIUM',
+        status NVARCHAR(50) DEFAULT 'PENDING',
+        reportedDate DATETIME2 NOT NULL,
+        assignedTo INT NULL
+      )
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.Payments', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.Payments (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        invoiceId INT NULL,
+        studentId INT NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        paymentDate DATETIME2 NOT NULL,
+        method NVARCHAR(50) DEFAULT 'CASH',
+        reference NVARCHAR(100) NULL
+      )
+    END
+  `)
+
+  await query(`
     IF OBJECT_ID('dbo.Invoices', 'U') IS NULL
     BEGIN
       CREATE TABLE dbo.Invoices (
@@ -81,8 +206,8 @@ async function ensureFeatureTables() {
         studentId INT NOT NULL,
         amount DECIMAL(10,2) NOT NULL,
         dueDate DATETIME2 NOT NULL,
-        status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
-        description VARCHAR(255) NULL
+        status NVARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        description NVARCHAR(255) NULL
       )
     END
   `)
@@ -211,40 +336,38 @@ app.get('/api/rooms', async (req, res) => {
     // In a real app, you'd decode the JWT token to get user info
     const isAdmin = token.includes('ADMIN'); // Simple check for demo
     
-    // Get rooms with their allocations
+    // Get rooms with their allocations. Use a single allocations fetch to avoid concurrent queries on one connection.
     const rooms = await query('SELECT * FROM Rooms');
-    
-    // For each room, get active allocations and students
-    const roomsWithAllocations = await Promise.all(rooms.map(async (room) => {
-      const allocations = await query(`
-        SELECT a.id, a.studentId, a.checkInDate, a.status as allocationStatus,
-               s.name as studentName, s.registrationNumber
-        FROM Allocations a
-        JOIN Students s ON a.studentId = s.id
-        WHERE a.roomId = ? AND a.status = 'ACTIVE'
-      `, [room.id]);
-      
-      // Compute current status based on allocations count vs capacity
+    const allocationRows = await query(`
+      SELECT a.id, a.studentId, a.roomId, a.checkInDate, a.status as allocationStatus,
+             s.name as studentName, s.registrationNumber
+      FROM Allocations a
+      JOIN Students s ON a.studentId = s.id
+      WHERE a.status = 'ACTIVE'
+    `);
+
+    const roomsWithAllocations = [];
+    for (const room of rooms) {
+      const allocations = allocationRows.filter((a) => a.roomId === room.id);
       const currentOccupancy = allocations.length;
       const computedStatus = currentOccupancy >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
-      
-      // Update room status in DB if different
+
       if (room.status !== computedStatus) {
         await query('UPDATE Rooms SET status = ? WHERE id = ?', [computedStatus, room.id]);
       }
-      
-      return {
+
+      roomsWithAllocations.push({
         ...room,
         status: computedStatus,
-        allocatedStudents: allocations.map(a => ({
+        allocatedStudents: allocations.map((a) => ({
           id: a.studentId,
           name: a.studentName,
           registrationNumber: a.registrationNumber,
           allocationId: a.id,
-          checkInDate: a.checkInDate
-        }))
-      };
-    }));
+          checkInDate: a.checkInDate,
+        })),
+      });
+    }
     
     if (!isAdmin) {
       // For students, only show available rooms
@@ -817,6 +940,8 @@ async function startServer() {
     console.error('Failed to connect to database. Exiting...');
     process.exit(1);
   }
+
+  await ensureFeatureTables();
 
   app.listen(PORT, () => {
     console.log(`✓ Hostel Management System Backend running on http://localhost:${PORT}/api`);

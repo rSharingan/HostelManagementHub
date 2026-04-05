@@ -16,10 +16,11 @@ import { useRooms } from '../rooms/hooks'
 
 export const AllocationsPage = () => {
   const navigate = useNavigate()
-  const { data: allocations = [], isLoading: allocationsLoading } = useAllocations()
-  const { data: rooms = [], isLoading: roomsLoading } = useRooms()
+  const { data: allocations = [], isLoading: allocationsLoading, error: allocationsError } = useAllocations()
+  const { data: rooms = [], isLoading: roomsLoading, error: roomsError } = useRooms()
   const studentsQuery = useStudents()
   const students = studentsQuery.data ?? []
+  const studentsError = studentsQuery.error
   const createAllocation = useCreateAllocation()
   const deleteAllocation = useDeleteAllocation()
 
@@ -66,6 +67,8 @@ export const AllocationsPage = () => {
       toast.error('Failed to delete allocation')
     }
   }
+
+  
 
   const columns = [
     {
@@ -158,25 +161,31 @@ export const AllocationsPage = () => {
               <label className="block text-sm font-medium text-slate-600 dark:text-slate-300">
                 Student
               </label>
-              <select
-                value={studentId}
-                onChange={(e) => setStudentId(e.target.value)}
-                className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-blue-500"
-              >
-                <option value="">Select Student</option>
-                {students.map((student) => (
-                  <option key={student.id} value={student.id}>
-                    {student.name} ({student.registrationNumber || student.email})
-                  </option>
-                ))}
-              </select>
+              {studentsError ? (
+                <p className="text-red-600 text-sm">Failed to load students</p>
+              ) : (
+                <select
+                  value={studentId}
+                  onChange={(e) => setStudentId(e.target.value)}
+                  className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-blue-500"
+                >
+                  <option value="">Select Student</option>
+                  {students.map((student) => (
+                    <option key={student.id} value={student.id}>
+                      {student.name} ({student.registrationNumber || student.email})
+                    </option>
+                  ))}
+                </select>
+              )}
             </div>
 
             <div>
               <label className="block text-sm font-medium text-slate-600 dark:text-slate-300">
                 Room
               </label>
-              {availableRooms.length === 0 ? (
+              {roomsError ? (
+                <p className="text-red-600 text-sm">Failed to load rooms</p>
+              ) : availableRooms.length === 0 ? (
                 <p className="mt-2 text-sm text-red-600">No available rooms to allocate. Add rooms or release existing allocations.</p>
               ) : (
                 <select
@@ -235,6 +244,13 @@ export const AllocationsPage = () => {
 
       {allocationsLoading || roomsLoading ? (
         <TableSkeletons />
+      ) : allocationsError || roomsError || studentsError ? (
+        <div className="text-center py-8">
+          <p className="text-red-600">Failed to load data. Please check your database connection.</p>
+          <p className="text-sm text-gray-500 mt-2">
+            {allocationsError?.message || roomsError?.message || studentsError?.message}
+          </p>
+        </div>
       ) : (
         <DataTable
           columns={columns}
