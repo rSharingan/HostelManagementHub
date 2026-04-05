@@ -785,6 +785,41 @@ app.get('/api/users', async (req, res) => {
   }
 });
 /* =========================
+   STUDENT APPLY FOR ROOM
+========================= */
+
+app.post('/api/room-requests', async (req, res) => {
+  try {
+    const { studentId, roomId } = req.body;
+
+    if (!studentId || !roomId) {
+      return res.status(400).json({ message: 'Student ID and Room ID are required' });
+    }
+
+    // Check if student already has a pending or approved request for this room
+    const existingRequest = await query(
+      'SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN (?, ?)',
+      [studentId, roomId, 'PENDING', 'APPROVED']
+    );
+
+    if (existingRequest && existingRequest.length > 0) {
+      return res.status(400).json({ message: 'You have already requested this room' });
+    }
+
+    // Create the request
+    await query(
+      'INSERT INTO RoomRequests (studentId, roomId, status, requestedDate) VALUES (?, ?, ?, GETDATE())',
+      [studentId, roomId, 'PENDING']
+    );
+
+    res.status(201).json({ message: 'Room request submitted successfully' });
+  } catch (err) {
+    console.error('Create room request error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+/* =========================
    ADMIN VIEW REQUESTS
 ========================= */
 
@@ -845,7 +880,7 @@ app.get('/api/reports/occupancy', async (req, res) => {
 app.get('/api/allocations', async (req, res) => {
   try {
     const result = await query(`
-      SELECT a.id, a.studentId, a.roomId, a.checkInDate, a.checkOutDate, a.status,
+      SELECT a.id, a.studentId, a.roomId, a.checkInDate, a.status,
              s.name as studentName, s.registrationNumber, s.email as studentEmail,
              r.roomNumber, r.block, r.floor, r.type
       FROM Allocations a
