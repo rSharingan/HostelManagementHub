@@ -9,10 +9,13 @@ import {
   getPaymentAPI,
   createPaymentAPI,
   updatePaymentAPI,
+  getRentStatusAPI,
+  payRentAPI,
 } from './api'
 
 const INVOICES_QUERY_KEY = ['invoices']
 const PAYMENTS_QUERY_KEY = ['payments']
+const RENT_QUERY_KEY = ['rent-status']
 
 // Invoices
 export const useInvoices = (params) => {
@@ -82,6 +85,26 @@ export const useUpdatePayment = () => {
     mutationFn: ({ id, data }) => updatePaymentAPI(id, data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: PAYMENTS_QUERY_KEY })
+    },
+  })
+}
+
+export const useRentStatus = (params, enabled = true) => {
+  return useQuery({
+    queryKey: [...RENT_QUERY_KEY, params],
+    queryFn: () => getRentStatusAPI(params),
+    enabled,
+  })
+}
+
+export const usePayRent = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: payRentAPI,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PAYMENTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: RENT_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: INVOICES_QUERY_KEY })
     },
   })
 }

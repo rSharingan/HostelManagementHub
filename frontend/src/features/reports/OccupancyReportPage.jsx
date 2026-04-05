@@ -7,7 +7,7 @@ import { useOccupancyReport } from './hooks';
  * Occupancy report page
  */
 export const OccupancyReportPage = () => {
-  const { data: report, isLoading, isError } = useOccupancyReport();
+  const { data: report = [], isLoading, isError } = useOccupancyReport();
 
   return (
     <div>

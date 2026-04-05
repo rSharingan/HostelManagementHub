@@ -43,3 +43,13 @@ export const updatePaymentAPI = async (id, payment) => {
   const { data } = await axios.put(API_ENDPOINTS.FEES.PAYMENTS_UPDATE(id), payment)
   return data
 }
+
+export const getRentStatusAPI = async (params = {}) => {
+  const { data } = await axios.get(API_ENDPOINTS.FEES.RENT_STATUS, { params })
+  return data
+}
+
+export const payRentAPI = async (payload) => {
+  const { data } = await axios.post(API_ENDPOINTS.FEES.RENT_PAY, payload)
+  return data
+}

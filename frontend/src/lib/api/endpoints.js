@@ -42,6 +42,8 @@ export const API_ENDPOINTS = {
     PAYMENTS_DETAIL: (id) => `/fees/payments/${id}`,
     PAYMENTS_CREATE: '/fees/payments',
     PAYMENTS_UPDATE: (id) => `/fees/payments/${id}`,
+    RENT_STATUS: '/fees/rent-status',
+    RENT_PAY: '/fees/rent-pay',
   },
   STAFF: {
     LIST: '/staff',

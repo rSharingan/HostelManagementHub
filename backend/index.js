@@ -133,6 +133,32 @@ async function getRoomById(roomId) {
   return result && result.length > 0 ? result[0] : null;
 }
 
+async function getStudentByEmail(email) {
+  if (!email) {
+    return null;
+  }
+
+  const result = await query('SELECT TOP 1 * FROM Students WHERE email = ?', [email]);
+  return result && result.length > 0 ? result[0] : null;
+}
+
+async function getActiveAllocationForStudent(studentId) {
+  if (!studentId) {
+    return null;
+  }
+
+  const result = await query(
+    `SELECT TOP 1 a.*, r.roomNumber, r.rentalCost, r.id AS resolvedRoomId
+     FROM Allocations a
+     LEFT JOIN Rooms r ON a.roomId = r.id
+     WHERE a.studentId = ? AND a.status = 'ACTIVE'
+     ORDER BY a.checkInDate DESC, a.id DESC`,
+    [studentId]
+  );
+
+  return result && result.length > 0 ? result[0] : null;
+}
+
 async function ensureBedsForRoom(roomId, capacity) {
   const existingBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ?', [roomId]);
   const existingCount = Number(existingBeds?.[0]?.count || 0);
@@ -794,6 +820,7 @@ app.get('/api/complaints', async (req, res) => {
              m.assignedById, m.assignedDate, m.resolvedById, m.resolvedDate,
              m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
              s.name AS studentName,
+              s.email AS studentEmail,
              st.name AS staffName,
              ab.name AS assignedByName,
              rb.name AS resolvedByName,
@@ -833,11 +860,23 @@ app.post('/api/complaints', async (req, res) => {
   try {
     const payload = req.body;
     const reportedDate = new Date().toISOString();
-    const roomId = toNullableInt(payload.roomId);
-    const studentId = toNullableInt(payload.studentId);
+    let roomId = toNullableInt(payload.roomId);
+    let studentId = toNullableInt(payload.studentId);
     const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
+
+    if (!studentId && payload.studentEmail) {
+      const student = await getStudentByEmail(payload.studentEmail);
+      studentId = student?.id || null;
+    }
+
+    let activeAllocation = null;
+    if (!roomId && studentId) {
+      activeAllocation = await getActiveAllocationForStudent(studentId);
+      roomId = activeAllocation?.roomId || activeAllocation?.resolvedRoomId || null;
+    }
+
     const linkedRoom = roomId ? await getRoomById(roomId) : null;
-    const roomName = payload.room || linkedRoom?.roomNumber || '';
+    const roomName = payload.room || linkedRoom?.roomNumber || activeAllocation?.roomNumber || '';
     await query(
       'INSERT INTO Maintenance (description, room, roomId, studentId, staffId, priority, status, reportedDate, assignedTo, studentApprovalStatus) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', 'PENDING_ASSIGNMENT', reportedDate, staffId || null, 'PENDING']
@@ -939,6 +978,7 @@ app.get('/api/maintenance', async (req, res) => {
              m.assignedById, m.assignedDate, m.resolvedById, m.resolvedDate,
              m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
              s.name AS studentName,
+              s.email AS studentEmail,
              st.name AS staffName,
              ab.name AS assignedByName,
              rb.name AS resolvedByName,
@@ -978,14 +1018,26 @@ app.post('/api/maintenance', async (req, res) => {
   try {
     const payload = req.body;
     const reportedDate = new Date().toISOString();
-    const roomId = toNullableInt(payload.roomId);
-    const studentId = toNullableInt(payload.studentId);
+    let roomId = toNullableInt(payload.roomId);
+    let studentId = toNullableInt(payload.studentId);
     const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
+
+    if (!studentId && payload.studentEmail) {
+      const student = await getStudentByEmail(payload.studentEmail);
+      studentId = student?.id || null;
+    }
+
+    let activeAllocation = null;
+    if (!roomId && studentId) {
+      activeAllocation = await getActiveAllocationForStudent(studentId);
+      roomId = activeAllocation?.roomId || activeAllocation?.resolvedRoomId || null;
+    }
+
     const linkedRoom = roomId ? await getRoomById(roomId) : null;
-    const roomName = payload.room || linkedRoom?.roomNumber || '';
+    const roomName = payload.room || linkedRoom?.roomNumber || activeAllocation?.roomNumber || '';
     await query(
       'INSERT INTO Maintenance (description, room, roomId, studentId, staffId, priority, status, reportedDate, assignedTo) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', payload.status || 'PENDING', reportedDate, staffId || null]
+      [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', payload.status || 'PENDING_ASSIGNMENT', reportedDate, staffId || null]
     );
     const created = await query('SELECT TOP 1 * FROM Maintenance ORDER BY id DESC');
     res.status(201).json({ ...(created && created[0] ? created[0] : payload), room: roomName, roomId, studentId, staffId });
@@ -1055,7 +1107,19 @@ app.post('/api/payments', async (req, res) => {
 // Fees module routes expected by frontend
 app.get('/api/fees/invoices', async (req, res) => {
   try {
-    const result = await query('SELECT * FROM Invoices ORDER BY dueDate DESC');
+    const result = await query(`
+      SELECT i.*,
+             CASE
+               WHEN i.status = 'PAID' THEN 'PAID'
+               WHEN i.dueDate < GETDATE() THEN 'OVERDUE'
+               ELSE i.status
+             END AS effectiveStatus,
+             s.name AS studentName,
+             s.registrationNumber
+      FROM Invoices i
+      LEFT JOIN Students s ON i.studentId = s.id
+      ORDER BY i.dueDate DESC
+    `);
     res.json(result);
   } catch (err) {
     console.error('Get invoices error:', err);
@@ -1109,11 +1173,203 @@ app.put('/api/fees/invoices/:id', async (req, res) => {
 
 app.get('/api/fees/payments', async (req, res) => {
   try {
-    const result = await query('SELECT * FROM Payments ORDER BY paymentDate DESC');
+    const result = await query(`
+      SELECT p.*, s.name AS studentName, s.registrationNumber
+      FROM Payments p
+      LEFT JOIN Students s ON p.studentId = s.id
+      ORDER BY p.paymentDate DESC
+    `);
     res.json(result);
   } catch (err) {
     console.error('Get fee payments error:', err);
     res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/fees/rent-status', async (req, res) => {
+  try {
+    const studentIdParam = toNullableInt(req.query.studentId);
+    const studentEmail = req.query.studentEmail;
+
+    let student = null;
+    if (studentIdParam) {
+      const byId = await query('SELECT TOP 1 * FROM Students WHERE id = ?', [studentIdParam]);
+      student = byId && byId.length > 0 ? byId[0] : null;
+    } else if (studentEmail) {
+      student = await getStudentByEmail(studentEmail);
+    }
+
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    const allocation = await getActiveAllocationForStudent(student.id);
+    if (!allocation) {
+      return res.json({
+        studentId: student.id,
+        hasActiveAllocation: false,
+        notifyRent: false,
+        canPayNow: false,
+        daysUsed: 0,
+        pendingCycles: 0,
+      });
+    }
+
+    const daysRow = await query('SELECT DATEDIFF(day, ?, GETDATE()) AS daysUsed', [allocation.checkInDate]);
+    const daysUsed = Math.max(0, Number(daysRow?.[0]?.daysUsed || 0));
+    const dueCycles = Math.floor(daysUsed / 31);
+
+    const paidCyclesRow = await query(
+      "SELECT COUNT(*) AS count FROM Payments WHERE studentId = ? AND reference LIKE 'RENT_%_CYCLE_%'",
+      [student.id]
+    );
+    const paidCycles = Number(paidCyclesRow?.[0]?.count || 0);
+    const pendingCycles = Math.max(0, dueCycles - paidCycles);
+    const nextCycleToPay = paidCycles + 1;
+    const nextPayDayThreshold = nextCycleToPay * 31;
+
+    return res.json({
+      studentId: student.id,
+      studentName: student.name,
+      hasActiveAllocation: true,
+      roomId: allocation.roomId,
+      roomNumber: allocation.roomNumber,
+      monthlyRent: Number(allocation.rentalCost || 0),
+      daysUsed,
+      notifyRent: daysUsed >= 25,
+      canPayNow: daysUsed >= nextPayDayThreshold,
+      pendingCycles,
+      paidCycles,
+      nextCycleToPay,
+      status: pendingCycles > 0 ? 'DUE' : 'OK',
+    });
+  } catch (err) {
+    console.error('Get rent status error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.post('/api/fees/rent-pay', async (req, res) => {
+  try {
+    const payload = req.body || {};
+    const studentIdParam = toNullableInt(payload.studentId);
+    const studentEmail = payload.studentEmail;
+
+    let student = null;
+    if (studentIdParam) {
+      const byId = await query('SELECT TOP 1 * FROM Students WHERE id = ?', [studentIdParam]);
+      student = byId && byId.length > 0 ? byId[0] : null;
+    } else if (studentEmail) {
+      student = await getStudentByEmail(studentEmail);
+    }
+
+    if (!student) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    const allocation = await getActiveAllocationForStudent(student.id);
+    if (!allocation) {
+      return res.status(400).json({ message: 'No active allocation found for student' });
+    }
+
+    const daysRow = await query('SELECT DATEDIFF(day, ?, GETDATE()) AS daysUsed', [allocation.checkInDate]);
+    const daysUsed = Math.max(0, Number(daysRow?.[0]?.daysUsed || 0));
+    const dueCycles = Math.floor(daysUsed / 31);
+
+    const paidCyclesRow = await query(
+      "SELECT COUNT(*) AS count FROM Payments WHERE studentId = ? AND reference LIKE 'RENT_%_CYCLE_%'",
+      [student.id]
+    );
+    const paidCycles = Number(paidCyclesRow?.[0]?.count || 0);
+    const nextCycleToPay = paidCycles + 1;
+    const nextPayDayThreshold = nextCycleToPay * 31;
+
+    if (daysUsed < nextPayDayThreshold || dueCycles <= paidCycles) {
+      return res.status(400).json({
+        message: 'Rent payment window is not open yet or no due cycle is pending',
+        daysUsed,
+        nextPayDayThreshold,
+      });
+    }
+
+    const amount = Number(allocation.rentalCost || 0);
+    if (!Number.isFinite(amount) || amount <= 0) {
+      return res.status(400).json({ message: 'Invalid room rental cost for billing' });
+    }
+
+    const cycleLabel = `RENT_${student.id}_CYCLE_${nextCycleToPay}`;
+    const invoiceDescription = `RENT_CYCLE_${nextCycleToPay}`;
+    const method = payload.method || 'CARD';
+    const externalReference = payload.reference || null;
+
+    const txResult = await query(
+      `BEGIN TRY
+         BEGIN TRAN;
+
+         IF EXISTS (SELECT 1 FROM Payments WHERE studentId = ? AND reference = ?)
+         BEGIN
+           RAISERROR('This rent cycle is already paid.', 16, 1);
+         END
+
+         DECLARE @invoiceId INT;
+
+         SELECT TOP 1 @invoiceId = id
+         FROM Invoices
+         WHERE studentId = ?
+           AND description = ?
+         ORDER BY id DESC;
+
+         IF @invoiceId IS NULL
+         BEGIN
+           INSERT INTO Invoices (studentId, amount, dueDate, status, description)
+           VALUES (?, ?, GETDATE(), 'PENDING', ?);
+           SET @invoiceId = SCOPE_IDENTITY();
+         END
+
+         INSERT INTO Payments (invoiceId, studentId, amount, paymentDate, method, reference)
+         VALUES (@invoiceId, ?, ?, GETDATE(), ?, ?);
+
+         UPDATE Invoices
+         SET status = 'PAID'
+         WHERE id = @invoiceId;
+
+         COMMIT TRAN;
+
+         SELECT @invoiceId AS invoiceId;
+       END TRY
+       BEGIN CATCH
+         IF @@TRANCOUNT > 0
+           ROLLBACK TRAN;
+
+         DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+         RAISERROR(@Err, 16, 1);
+       END CATCH`,
+      [
+        student.id,
+        cycleLabel,
+        student.id,
+        invoiceDescription,
+        student.id,
+        amount,
+        invoiceDescription,
+        student.id,
+        amount,
+        method,
+        cycleLabel,
+      ]
+    );
+
+    res.status(201).json({
+      message: 'Rent payment successful',
+      studentId: student.id,
+      cycle: nextCycleToPay,
+      amount,
+      invoiceId: txResult?.[0]?.invoiceId || null,
+      externalReference,
+    });
+  } catch (err) {
+    console.error('Rent payment error:', err);
+    res.status(500).json({ message: err.message || 'Internal server error' });
   }
 });
 
@@ -1326,10 +1582,97 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
 
 app.get('/api/reports/occupancy', async (req, res) => {
   try {
-    const result = await query('SELECT * FROM OccupancyReport');
+    const result = await query(`
+      SELECT
+        r.id,
+        r.id AS roomId,
+        r.roomNumber,
+        r.capacity,
+        COUNT(CASE WHEN b.status = 'OCCUPIED' THEN 1 END) AS occupied,
+        (r.capacity - COUNT(CASE WHEN b.status = 'OCCUPIED' THEN 1 END)) AS available,
+        GETDATE() AS reportDate
+      FROM Rooms r
+      LEFT JOIN Beds b ON b.roomId = r.id
+      GROUP BY r.id, r.roomNumber, r.capacity
+      ORDER BY r.roomNumber
+    `);
     res.json(result);
   } catch (err) {
+    console.error('Get occupancy report error:', err);
     res.status(500).json({ message: 'Error fetching report' });
+  }
+});
+
+app.get('/api/reports/dues', async (req, res) => {
+  try {
+    const result = await query(`
+      WITH ActiveAllocations AS (
+        SELECT a.studentId, a.roomId, a.checkInDate,
+               ROW_NUMBER() OVER (PARTITION BY a.studentId ORDER BY a.checkInDate DESC, a.id DESC) AS rn
+        FROM Allocations a
+        WHERE a.status = 'ACTIVE'
+      ),
+      PaidCycles AS (
+        SELECT p.studentId, COUNT(*) AS paidCycles
+        FROM Payments p
+        WHERE p.reference LIKE 'RENT_%_CYCLE_%'
+        GROUP BY p.studentId
+      )
+      SELECT
+        s.id AS studentId,
+        s.name AS studentName,
+        s.registrationNumber,
+        s.email AS studentEmail,
+        r.roomNumber,
+        r.rentalCost AS monthlyRent,
+        DATEDIFF(day, aa.checkInDate, GETDATE()) AS daysUsed,
+        ISNULL(pc.paidCycles, 0) AS paidCycles,
+        FLOOR(DATEDIFF(day, aa.checkInDate, GETDATE()) / 31.0) AS dueCycles,
+        CASE
+          WHEN FLOOR(DATEDIFF(day, aa.checkInDate, GETDATE()) / 31.0) - ISNULL(pc.paidCycles, 0) > 0 THEN 'DUE'
+          ELSE 'OK'
+        END AS status,
+        GETDATE() AS reportDate
+      FROM ActiveAllocations aa
+      JOIN Students s ON aa.studentId = s.id
+      JOIN Rooms r ON aa.roomId = r.id
+      LEFT JOIN PaidCycles pc ON pc.studentId = s.id
+      WHERE aa.rn = 1
+      ORDER BY status DESC, s.name ASC
+    `);
+
+    res.json(result);
+  } catch (err) {
+    console.error('Get dues report error:', err);
+    res.status(500).json({ message: 'Error fetching dues report' });
+  }
+});
+
+app.get('/api/reports/maintenance', async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT
+        m.id,
+        m.status,
+        m.priority,
+        m.reportedDate,
+        m.assignedDate,
+        m.resolvedDate,
+        m.studentApprovalStatus,
+        r.roomNumber,
+        s.name AS studentName,
+        u.name AS staffName,
+        m.description
+      FROM Maintenance m
+      LEFT JOIN Rooms r ON m.roomId = r.id
+      LEFT JOIN Students s ON m.studentId = s.id
+      LEFT JOIN Users u ON m.staffId = u.id
+      ORDER BY m.reportedDate DESC
+    `);
+    res.json(result);
+  } catch (err) {
+    console.error('Get maintenance report error:', err);
+    res.status(500).json({ message: 'Error fetching maintenance report' });
   }
 });
 

@@ -18,6 +18,8 @@ export const DashboardPage = () => {
   const [students, setStudents] = useState([])
   const [payments, setPayments] = useState([])
   const [users, setUsers] = useState([])
+  const [rentStatus, setRentStatus] = useState(null)
+  const [isPayingRent, setIsPayingRent] = useState(false)
   const currentStudent = user?.role === 'STUDENT'
     ? students.find((student) => student.email === user.email)
     : null
@@ -53,12 +55,16 @@ export const DashboardPage = () => {
           const complaintsRes = await axios.get(API_ENDPOINTS.COMPLAINTS.LIST)
           setComplaints(complaintsRes.data)
         } else if (user?.role === 'STUDENT') {
-          const [roomsRes, paymentsRes] = await Promise.all([
+          const [roomsRes, paymentsRes, studentsRes, complaintsRes] = await Promise.all([
             axios.get(API_ENDPOINTS.ROOMS.LIST),
-            axios.get(API_ENDPOINTS.PAYMENTS.LIST)
+            axios.get(API_ENDPOINTS.PAYMENTS.LIST),
+            axios.get(API_ENDPOINTS.STUDENTS.LIST),
+            axios.get(API_ENDPOINTS.COMPLAINTS.LIST),
           ])
           setRooms(roomsRes.data)
           setPayments(paymentsRes.data)
+          setStudents(studentsRes.data)
+          setComplaints(complaintsRes.data)
         }
       } catch (error) {
         console.error('Error fetching dashboard data:', error)
@@ -72,6 +78,25 @@ export const DashboardPage = () => {
     }
 
     if (user) fetchData()
+  }, [user])
+
+  useEffect(() => {
+    const fetchRentStatus = async () => {
+      if (!user || user.role !== 'STUDENT') {
+        return
+      }
+
+      try {
+        const { data } = await axios.get(API_ENDPOINTS.FEES.RENT_STATUS, {
+          params: { studentEmail: user.email },
+        })
+        setRentStatus(data)
+      } catch (error) {
+        setRentStatus(null)
+      }
+    }
+
+    fetchRentStatus()
   }, [user])
 
   const renderAdminDashboard = () => (
@@ -466,7 +491,7 @@ export const DashboardPage = () => {
         <StatCard
           icon={DollarSign}
           label="Rent Status"
-          value={currentStudent?.rentPaid ? 'Paid' : 'Unpaid'}
+          value={rentStatus?.status === 'DUE' ? 'Due' : 'OK'}
         />
       </div>
 
@@ -494,14 +519,25 @@ export const DashboardPage = () => {
           </CardHeader>
           <CardContent>
             <div className="text-center py-8">
-              <div className={`text-4xl mb-4 ${currentStudent?.rentPaid ? 'text-green-500' : 'text-red-500'}`}>
-                {currentStudent?.rentPaid ? '✓' : '✗'}
+              <div className={`text-4xl mb-4 ${rentStatus?.status === 'DUE' ? 'text-red-500' : 'text-green-500'}`}>
+                {rentStatus?.status === 'DUE' ? '✗' : '✓'}
               </div>
               <p className="text-lg font-medium">
-                {currentStudent?.rentPaid ? 'Rent Paid' : 'Rent Pending'}
+                {rentStatus?.status === 'DUE' ? 'Rent Due' : 'Rent Up To Date'}
               </p>
-              <Button className="mt-4" disabled={currentStudent?.rentPaid}>
-                {currentStudent?.rentPaid ? 'Paid' : 'Pay Rent'}
+              {rentStatus?.notifyRent && (
+                <p className="mt-2 text-sm text-amber-600">
+                  {rentStatus?.canPayNow
+                    ? `Payment window is open. Pending cycles: ${rentStatus.pendingCycles}`
+                    : `Reminder: rent becomes payable on day 31. You are on day ${rentStatus.daysUsed}.`}
+                </p>
+              )}
+              <Button
+                className="mt-4"
+                disabled={!rentStatus?.canPayNow || isPayingRent}
+                onClick={handlePayRent}
+              >
+                {isPayingRent ? 'Processing...' : rentStatus?.canPayNow ? 'Pay Rent' : 'Payment Locked'}
               </Button>
             </div>
           </CardContent>
@@ -561,15 +597,7 @@ export const DashboardPage = () => {
       await axios.post(API_ENDPOINTS.COMPLAINTS.CREATE, {
         description: formData.get('description'),
         priority: formData.get('priority'),
-        status: 'PENDING',
-        studentId: currentStudent?.id,
-        studentName: currentStudent?.name || user.name,
         studentEmail: user.email,
-        registrationNumber: currentStudent?.registrationNumber,
-        department: currentStudent?.department,
-        yearOfStudy: currentStudent?.yearOfStudy,
-        roomId: currentStudent?.roomId,
-        roomNumber: currentStudent?.roomId ? rooms.find((room) => String(room.id) === String(currentStudent.roomId))?.roomNumber : null,
       })
       // Refresh complaints
       const complaintsRes = await axios.get(API_ENDPOINTS.COMPLAINTS.LIST)
@@ -579,6 +607,29 @@ export const DashboardPage = () => {
     } catch (error) {
       console.error('Error submitting complaint:', error)
       toast.error('Failed to submit complaint')
+    }
+  }
+
+  const handlePayRent = async () => {
+    try {
+      setIsPayingRent(true)
+      await axios.post(API_ENDPOINTS.FEES.RENT_PAY, {
+        studentEmail: user.email,
+        method: 'CARD',
+      })
+
+      const [paymentsRes, rentStatusRes] = await Promise.all([
+        axios.get(API_ENDPOINTS.PAYMENTS.LIST),
+        axios.get(API_ENDPOINTS.FEES.RENT_STATUS, { params: { studentEmail: user.email } }),
+      ])
+
+      setPayments(paymentsRes.data)
+      setRentStatus(rentStatusRes.data)
+      toast.success('Rent paid successfully')
+    } catch (error) {
+      toast.error(error.response?.data?.message || 'Failed to process rent payment')
+    } finally {
+      setIsPayingRent(false)
     }
   }
 

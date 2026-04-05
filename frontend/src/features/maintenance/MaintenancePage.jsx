@@ -37,9 +37,9 @@ const canResolveComplaint = (userId, userRole, complaint) => {
     && complaint.status === 'ASSIGNED'
 }
 
-const canApproveComplaint = (userId, userRole, complaint) => {
+const canApproveComplaint = (userEmail, userRole, complaint) => {
   return userRole === 'STUDENT'
-    && String(complaint.studentId || '') === String(userId)
+    && String((complaint.studentEmail || '').toLowerCase()) === String((userEmail || '').toLowerCase())
     && complaint.status === 'RESOLVED_PENDING_APPROVAL'
 }
 
@@ -66,7 +66,7 @@ export const MaintenancePage = () => {
     }
 
     if (user.role === 'STUDENT') {
-      return complaints.filter((complaint) => String(complaint.studentId || '') === String(user.id))
+      return complaints.filter((complaint) => String((complaint.studentEmail || '').toLowerCase()) === String((user.email || '').toLowerCase()))
     }
 
     if (['WARDEN', 'CARETAKER'].includes(user.role)) {
@@ -105,10 +105,11 @@ export const MaintenancePage = () => {
       const room = rooms.find((item) => String(item.id) === String(form.roomId))
       await createMaintenance.mutateAsync({
         description: form.description,
-        roomId: form.roomId ? Number(form.roomId) : null,
-        room: room?.roomNumber || null,
+        roomId: user?.role === 'STUDENT' ? null : (form.roomId ? Number(form.roomId) : null),
+        room: user?.role === 'STUDENT' ? null : (room?.roomNumber || null),
         priority: form.priority,
-        studentId: user?.role === 'STUDENT' ? Number(user.id) : null,
+        studentId: null,
+        studentEmail: user?.role === 'STUDENT' ? user.email : null,
         status: 'PENDING_ASSIGNMENT',
       })
       toast.success('Complaint submitted')
@@ -254,7 +255,7 @@ export const MaintenancePage = () => {
               </Button>
             )}
 
-            {canApproveComplaint(user?.id, user?.role, complaint) && (
+            {canApproveComplaint(user?.email, user?.role, complaint) && (
               <div className="flex gap-2">
                 <Button size="sm" onClick={() => handleStudentDecision(complaint, 'APPROVED')}>
                   Approve
@@ -293,18 +294,20 @@ export const MaintenancePage = () => {
         </CardHeader>
         <CardContent>
           <form className="grid grid-cols-1 md:grid-cols-4 gap-3" onSubmit={handleCreate}>
-            <select
-              className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-800"
-              value={form.roomId}
-              onChange={(e) => setForm((prev) => ({ ...prev, roomId: e.target.value }))}
-            >
-              <option value="">Select room (optional)</option>
-              {rooms.map((room) => (
-                <option key={room.id} value={room.id}>
-                  {room.roomNumber}
-                </option>
-              ))}
-            </select>
+            {user?.role !== 'STUDENT' && (
+              <select
+                className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-800"
+                value={form.roomId}
+                onChange={(e) => setForm((prev) => ({ ...prev, roomId: e.target.value }))}
+              >
+                <option value="">Select room (optional)</option>
+                {rooms.map((room) => (
+                  <option key={room.id} value={room.id}>
+                    {room.roomNumber}
+                  </option>
+                ))}
+              </select>
+            )}
             <Input
               name="description"
               placeholder="Issue description"

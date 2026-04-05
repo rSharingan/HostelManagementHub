@@ -5,7 +5,15 @@ import { AuthContext } from './AuthProvider'
 export const useAuth = () => {
   const context = useContext(AuthContext)
   if (!context) {
-    throw new Error('useAuth must be used within AuthProvider')
+    // Fail-safe for transient provider wiring/HMR issues to avoid app hard-crash.
+    return {
+      user: null,
+      isAuthenticated: false,
+      isLoading: false,
+      signup: async () => {},
+      login: async () => {},
+      logout: async () => {},
+    }
   }
   return context
 }
