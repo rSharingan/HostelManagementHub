@@ -31,6 +31,7 @@ export const useCreateAllocation = () => {
     mutationFn: createAllocationAPI,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ALLOCATIONS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['rooms'] })
     },
   })
 }
@@ -51,6 +52,7 @@ export const useDeleteAllocation = () => {
     mutationFn: deleteAllocationAPI,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ALLOCATIONS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['rooms'] })
     },
   })
 }

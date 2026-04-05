@@ -211,17 +211,48 @@ app.get('/api/rooms', async (req, res) => {
     // In a real app, you'd decode the JWT token to get user info
     const isAdmin = token.includes('ADMIN'); // Simple check for demo
     
-    let queryStr = 'SELECT * FROM Rooms';
-    let params = [];
+    // Get rooms with their allocations
+    const rooms = await query('SELECT * FROM Rooms');
+    
+    // For each room, get active allocations and students
+    const roomsWithAllocations = await Promise.all(rooms.map(async (room) => {
+      const allocations = await query(`
+        SELECT a.id, a.studentId, a.checkInDate, a.status as allocationStatus,
+               s.name as studentName, s.registrationNumber
+        FROM Allocations a
+        JOIN Students s ON a.studentId = s.id
+        WHERE a.roomId = ? AND a.status = 'ACTIVE'
+      `, [room.id]);
+      
+      // Compute current status based on allocations count vs capacity
+      const currentOccupancy = allocations.length;
+      const computedStatus = currentOccupancy >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
+      
+      // Update room status in DB if different
+      if (room.status !== computedStatus) {
+        await query('UPDATE Rooms SET status = ? WHERE id = ?', [computedStatus, room.id]);
+      }
+      
+      return {
+        ...room,
+        status: computedStatus,
+        allocatedStudents: allocations.map(a => ({
+          id: a.studentId,
+          name: a.studentName,
+          registrationNumber: a.registrationNumber,
+          allocationId: a.id,
+          checkInDate: a.checkInDate
+        }))
+      };
+    }));
     
     if (!isAdmin) {
       // For students, only show available rooms
-      queryStr += ' WHERE status = ?';
-      params.push('AVAILABLE');
+      const availableRooms = roomsWithAllocations.filter(room => room.status === 'AVAILABLE');
+      res.json(availableRooms);
+    } else {
+      res.json(roomsWithAllocations);
     }
-    
-    const result = await query(queryStr, params);
-    res.json(result);
   } catch (err) {
     console.error('Get rooms error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -247,22 +278,76 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
     const roomId = Number(req.params.id);
     const auth = req.headers.authorization || '';
     const token = auth.replace('Bearer ', '');
-    
     // Get current user (for demo, assume student id is 1, in real app decode token)
     const studentId = 1; // This should come from decoded token
     
-    // Check if room is available
-    const roomCheck = await query('SELECT * FROM Rooms WHERE id = ? AND status = ?', [roomId, 'AVAILABLE']);
-    if (!roomCheck || roomCheck.length === 0) {
-      return res.status(400).json({ message: 'Room is not available' });
+    // Check current allocations for the room
+    const currentAllocations = await query('SELECT COUNT(*) as count FROM Allocations WHERE roomId = ? AND status = ?', [roomId, 'ACTIVE']);
+    const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
+    
+    if (!room || room.length === 0) {
+      return res.status(404).json({ message: 'Room not found' });
     }
     
-    // Update room to occupied and assign to student
-    await query('UPDATE Rooms SET status = ?, studentId = ? WHERE id = ?', ['OCCUPIED', studentId, roomId]);
+    const occupancy = currentAllocations[0].count;
+    if (occupancy >= room[0].capacity) {
+      return res.status(400).json({ message: 'Room is at full capacity' });
+    }
+    
+    // Check if student already has an active allocation
+    const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [studentId, 'ACTIVE']);
+    if (existingAllocation && existingAllocation.length > 0) {
+      return res.status(400).json({ message: 'Student already has an active room allocation' });
+    }
+    
+    // Create allocation
+    await query('INSERT INTO Allocations (studentId, roomId, checkInDate, status) VALUES (?, ?, GETDATE(), ?)', [studentId, roomId, 'ACTIVE']);
+    
+    // Update room status if now full
+    const newOccupancy = occupancy + 1;
+    const newStatus = newOccupancy >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
+    await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
     
     res.json({ message: 'Room applied successfully' });
   } catch (err) {
     console.error('Apply room error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+app.put('/api/rooms/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const payload = req.body;
+
+    await query(
+      `UPDATE Rooms 
+       SET roomNumber = ?, block = ?, floor = ?, capacity = ?, type = ?, rentalCost = ?, status = ?
+       WHERE id = ?`,
+      [
+        payload.roomNumber,
+        payload.block,
+        payload.floor,
+        payload.capacity,
+        payload.type,
+        payload.rentalCost,
+        payload.status || 'AVAILABLE',
+        id
+      ]
+    );
+
+    res.json({ ...payload, id });
+  } catch (err) {
+    console.error('Update room error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+app.delete('/api/rooms/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    await query('DELETE FROM Rooms WHERE id = ?', [id]);
+    res.status(204).send();
+  } catch (err) {
+    console.error('Delete room error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -632,6 +717,98 @@ app.get('/api/reports/occupancy', async (req, res) => {
 });
 
 
+
+// Allocations CRUD
+app.get('/api/allocations', async (req, res) => {
+  try {
+    const result = await query(`
+      SELECT a.id, a.studentId, a.roomId, a.checkInDate, a.checkOutDate, a.status,
+             s.name as studentName, s.registrationNumber, s.email as studentEmail,
+             r.roomNumber, r.block, r.floor, r.type
+      FROM Allocations a
+      JOIN Students s ON a.studentId = s.id
+      JOIN Rooms r ON a.roomId = r.id
+      ORDER BY a.checkInDate DESC
+    `);
+    res.json(result);
+  } catch (err) {
+    console.error('Get allocations error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.post('/api/allocations', async (req, res) => {
+  try {
+    const { studentId, roomId, allocated_date, status = 'ACTIVE' } = req.body;
+    
+    if (!studentId || !roomId) {
+      return res.status(400).json({ message: 'Student and room are required' });
+    }
+    
+    // Check if student already has an active allocation
+    const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [studentId, 'ACTIVE']);
+    if (existingAllocation && existingAllocation.length > 0) {
+      return res.status(400).json({ message: 'Student already has an active room allocation' });
+    }
+    
+    // Check room capacity
+    const currentAllocations = await query('SELECT COUNT(*) as count FROM Allocations WHERE roomId = ? AND status = ?', [roomId, 'ACTIVE']);
+    const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
+    
+    if (!room || room.length === 0) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
+    
+    const occupancy = currentAllocations[0].count;
+    if (occupancy >= room[0].capacity) {
+      return res.status(400).json({ message: 'Room is at full capacity' });
+    }
+    
+    // Create allocation
+    const checkIn = allocated_date || new Date().toISOString();
+    await query('INSERT INTO Allocations (studentId, roomId, checkInDate, status) VALUES (?, ?, ?, ?)', [studentId, roomId, checkIn, status]);
+    
+    // Update room status if now full
+    const newOccupancy = occupancy + 1;
+    const newStatus = newOccupancy >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
+    await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
+    
+    res.status(201).json({ message: 'Allocation created successfully' });
+  } catch (err) {
+    console.error('Create allocation error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.delete('/api/allocations/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    
+    // Get allocation details
+    const allocation = await query('SELECT * FROM Allocations WHERE id = ?', [id]);
+    if (!allocation || allocation.length === 0) {
+      return res.status(404).json({ message: 'Allocation not found' });
+    }
+    
+    const { roomId } = allocation[0];
+    
+    // Delete allocation
+    await query('DELETE FROM Allocations WHERE id = ?', [id]);
+    
+    // Update room status
+    const currentAllocations = await query('SELECT COUNT(*) as count FROM Allocations WHERE roomId = ? AND status = ?', [roomId, 'ACTIVE']);
+    const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
+    
+    const newOccupancy = currentAllocations[0].count;
+    const newStatus = newOccupancy >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
+    await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
+    
+    res.status(204).send();
+  } catch (err) {
+    console.error('Delete allocation error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
 
 // Start server
 async function startServer() {

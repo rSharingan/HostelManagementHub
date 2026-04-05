@@ -29,19 +29,7 @@ CREATE TABLE Students (
     password VARCHAR(255) NOT NULL
 );
 
--- Rooms table
-CREATE TABLE Rooms (
-    id INT IDENTITY(1,1) PRIMARY KEY,
-    roomNumber VARCHAR(50) NOT NULL,
-    block VARCHAR(10) NOT NULL,
-    floor INT NOT NULL,
-    capacity INT NOT NULL,
-    type VARCHAR(50) NOT NULL,
-    rentalCost DECIMAL(10,2) NOT NULL,
-    status VARCHAR(50) DEFAULT 'AVAILABLE',
-    studentId INT,
-    FOREIGN KEY (studentId) REFERENCES Students(id)
-);
+
 
 -- Maintenance table (for complaints)
 CREATE TABLE Maintenance (
@@ -72,6 +60,41 @@ INSERT INTO Users (name, email, password, role) VALUES ('Admin', 'admin@hostel.c
 INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password)
 VALUES ('Alice Johnson', 'alice@example.com', '1234567890', 'REG-001', 'Computer Science', 2, 'ACTIVE', 'password');
 
--- Insert sample room
+-- Insert sample rooms
 INSERT INTO Rooms (roomNumber, block, floor, capacity, type, rentalCost, status)
 VALUES ('101', 'A', 1, 2, 'Single', 500.00, 'AVAILABLE');
+
+INSERT INTO Rooms (roomNumber, block, floor, capacity, type, rentalCost, status)
+VALUES ('102', 'A', 1, 2, 'Single', 500.00, 'AVAILABLE');
+
+-- Insert sample allocation if none exists
+BEGIN TRY
+  IF NOT EXISTS (SELECT 1 FROM Allocations)
+  BEGIN
+    DECLARE @sId INT, @rId INT;
+    SELECT TOP 1 @sId = id FROM Students ORDER BY id;
+    SELECT TOP 1 @rId = id FROM Rooms WHERE status = 'AVAILABLE' ORDER BY id;
+
+    IF @sId IS NOT NULL AND @rId IS NOT NULL
+    BEGIN
+      INSERT INTO Allocations (studentId, roomId, checkInDate, status)
+      VALUES (@sId, @rId, GETDATE(), 'ACTIVE');
+      UPDATE Rooms SET status = 'OCCUPIED', studentId = @sId WHERE id = @rId;
+    END
+  END
+END TRY
+BEGIN CATCH
+  -- ignore if columns are named differently
+END CATCH
+
+-- Allocations table
+CREATE TABLE Allocations (
+    id INT IDENTITY(1,1) PRIMARY KEY,
+    studentId INT NOT NULL,
+    roomId INT NOT NULL,
+    checkInDate DATETIME2 DEFAULT GETDATE(),
+    checkOutDate DATETIME2 NULL,
+    status VARCHAR(50) DEFAULT 'ACTIVE',
+    FOREIGN KEY (studentId) REFERENCES Students(id),
+    FOREIGN KEY (roomId) REFERENCES Rooms(id)
+);

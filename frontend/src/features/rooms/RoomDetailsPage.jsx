@@ -1,7 +1,7 @@
 // path: src/features/rooms/RoomDetailsPage.jsx
 import { useNavigate, useParams } from 'react-router-dom'
 import { ArrowLeft } from 'lucide-react'
-import { useRoom, useUpdateRoom } from './hooks'
+import { useRoom, useUpdateRoom, useCreateRoom } from './hooks'
 import { RoomForm } from './RoomForm'
 import { Button } from '../../components/ui/Button'
 import { DetailPageSkeleton } from '../../components/common/Skeletons'
@@ -13,16 +13,14 @@ export const RoomDetailsPage = () => {
   const isNew = id === 'new'
 
   const { data: room, isLoading } = useRoom(id, !isNew)
+  const createRoom = useCreateRoom()
   const updateRoom = useUpdateRoom()
 
   const handleSubmit = async (data) => {
     try {
       if (isNew) {
         // Create new room
-        await updateRoom.mutateAsync({
-          id: 'create',
-          data,
-        })
+        await createRoom.mutateAsync(data)
         toast.success('Room created successfully')
       } else {
         // Update existing room

@@ -58,6 +58,24 @@ export const RoomsPage = () => {
       accessorKey: 'capacity',
     },
     {
+      header: 'Allocated Students',
+      cell: ({ row }) => {
+        const allocated = row.original.allocatedStudents || [];
+        if (allocated.length === 0) {
+          return <span className="text-gray-500">None</span>;
+        }
+        return (
+          <div className="flex flex-col gap-1">
+            {allocated.map((student, index) => (
+              <div key={index} className="text-sm">
+                {student.name} ({student.registrationNumber})
+              </div>
+            ))}
+          </div>
+        );
+      },
+    },
+    {
       header: 'Status',
       accessorKey: 'status',
       cell: ({ row }) => (

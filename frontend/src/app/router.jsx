@@ -11,6 +11,7 @@ import { StudentsPage } from '../features/students/StudentsPage'
 import { StudentDetailsPage } from '../features/students/StudentDetailsPage'
 import { RoomsPage } from '../features/rooms/RoomsPage'
 import { RoomDetailsPage } from '../features/rooms/RoomDetailsPage'
+import { NewRoomPage } from '../features/rooms/NewRoomPage'
 import { AllocationsPage } from '../features/allocations/AllocationsPage'
 import { InvoicesPage } from '../features/fees/InvoicesPage'
 import { PaymentsPage } from '../features/fees/PaymentsPage'
@@ -76,6 +77,16 @@ export const router = createBrowserRouter([
       <RequireAuth>
         <AppLayout>
           <RoomsPage />
+        </AppLayout>
+      </RequireAuth>
+    ),
+  },
+  {
+    path: '/rooms/new',
+    element: (
+      <RequireAuth>
+        <AppLayout>
+          <NewRoomPage />
         </AppLayout>
       </RequireAuth>
     ),
