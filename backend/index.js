@@ -193,6 +193,10 @@ async function syncRoomStatus(roomId) {
   const occupancy = Number(occupiedBeds?.[0]?.count || 0);
   const newStatus = occupancy >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
   await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
+
+  if (newStatus === 'OCCUPIED') {
+    await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
+  }
 }
 
 async function seedBedsForAllRooms() {
@@ -516,6 +520,38 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
+app.post('/api/auth/change-password', async (req, res) => {
+  try {
+    const { email, currentPassword, newPassword } = req.body || {};
+
+    if (!email || !currentPassword || !newPassword) {
+      return res.status(400).json({ message: 'Email, current password and new password are required' });
+    }
+
+    if (String(newPassword).length < 6) {
+      return res.status(400).json({ message: 'New password must be at least 6 characters long' });
+    }
+
+    const userRows = await query('SELECT TOP 1 * FROM Users WHERE email = ?', [email]);
+    if (!userRows || userRows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const user = userRows[0];
+    if (user.password !== currentPassword) {
+      return res.status(400).json({ message: 'Current password is incorrect' });
+    }
+
+    await query('UPDATE Users SET password = ? WHERE email = ?', [newPassword, email]);
+    await query('UPDATE Students SET password = ? WHERE email = ?', [newPassword, email]);
+
+    res.json({ message: 'Password changed successfully' });
+  } catch (err) {
+    console.error('Change password error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 app.get('/api/me', async (req, res) => {
   try {
     const auth = req.headers.authorization || '';
@@ -717,6 +753,16 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
     const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
     if (!room || room.length === 0) {
       return res.status(404).json({ message: 'Room not found' });
+    }
+
+    const activeAllocationsForRoom = await query(
+      'SELECT COUNT(*) AS count FROM Allocations WHERE roomId = ? AND status = ?',
+      [roomId, 'ACTIVE']
+    );
+    const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
+    if (activeCount >= Number(room[0].capacity || 0)) {
+      await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
+      return res.status(400).json({ message: 'Room is at full capacity' });
     }
 
     const existingRequest = await query(
@@ -1442,7 +1488,7 @@ app.put('/api/fees/payments/:id', async (req, res) => {
 // Staff module routes expected by frontend
 app.get('/api/staff', async (req, res) => {
   try {
-    const result = await query("SELECT id, name, email, role FROM Users WHERE role IN ('WARDEN', 'CARETAKER')");
+    const result = await query("SELECT id, name, email, role, hostelId FROM Users WHERE role IN ('WARDEN', 'CARETAKER')");
     res.json(result);
   } catch (err) {
     console.error('Get staff error:', err);
@@ -1453,7 +1499,7 @@ app.get('/api/staff', async (req, res) => {
 app.get('/api/staff/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const result = await query('SELECT id, name, email, role FROM Users WHERE id = ?', [id]);
+    const result = await query('SELECT id, name, email, role, hostelId FROM Users WHERE id = ?', [id]);
     if (!result || result.length === 0) {
       return res.status(404).json({ message: 'Not found' });
     }
@@ -1468,19 +1514,33 @@ app.post('/api/staff', async (req, res) => {
   try {
     const payload = req.body;
     const role = payload.role === 'CARETAKER' ? 'CARETAKER' : 'WARDEN';
+    const hostelId = toIntOrDefault(payload.hostelId, 1);
+
+    if (!payload.name || !payload.email || !payload.password) {
+      return res.status(400).json({ message: 'Name, email and password are required' });
+    }
+    if (String(payload.password).length < 6) {
+      return res.status(400).json({ message: 'Password must be at least 6 characters long' });
+    }
+
     const existing = await query('SELECT id FROM Users WHERE email = ?', [payload.email]);
     if (existing && existing.length > 0) {
       return res.status(400).json({ message: 'User already exists with this email' });
     }
 
+    const hostel = await query('SELECT TOP 1 id FROM Hostels WHERE id = ?', [hostelId]);
+    if (!hostel || hostel.length === 0) {
+      return res.status(400).json({ message: 'Invalid hostel id' });
+    }
+
     await query(
       'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
-      [payload.name, payload.email, payload.password || 'password', role, toIntOrDefault(payload.hostelId, 1)]
+      [payload.name, payload.email, payload.password || 'password', role, hostelId]
     );
-    res.status(201).json({ ...payload, role, hostelId: toIntOrDefault(payload.hostelId, 1) });
+    res.status(201).json({ name: payload.name, email: payload.email, role, hostelId });
   } catch (err) {
     console.error('Create staff error:', err);
-    res.status(500).json({ message: 'Internal server error' });
+    res.status(500).json({ message: err.message || 'Internal server error' });
   }
 });
 
@@ -1489,14 +1549,21 @@ app.put('/api/staff/:id', async (req, res) => {
     const id = Number(req.params.id);
     const payload = req.body;
     const role = payload.role === 'CARETAKER' ? 'CARETAKER' : 'WARDEN';
+    const hostelId = toIntOrDefault(payload.hostelId, 1);
+
+    const hostel = await query('SELECT TOP 1 id FROM Hostels WHERE id = ?', [hostelId]);
+    if (!hostel || hostel.length === 0) {
+      return res.status(400).json({ message: 'Invalid hostel id' });
+    }
+
     await query(
       'UPDATE Users SET name = ?, email = ?, role = ?, hostelId = ? WHERE id = ?',
-      [payload.name, payload.email, role, toIntOrDefault(payload.hostelId, 1), id]
+      [payload.name, payload.email, role, hostelId, id]
     );
-    res.json({ ...payload, id, role, hostelId: toIntOrDefault(payload.hostelId, 1) });
+    res.json({ ...payload, id, role, hostelId });
   } catch (err) {
     console.error('Update staff error:', err);
-    res.status(500).json({ message: 'Internal server error' });
+    res.status(500).json({ message: err.message || 'Internal server error' });
   }
 });
 
@@ -1537,6 +1604,21 @@ app.post('/api/room-requests', async (req, res) => {
 
     if (!resolvedStudentId || !roomId) {
       return res.status(400).json({ message: 'Student ID and Room ID are required' });
+    }
+
+    const room = await query('SELECT TOP 1 * FROM Rooms WHERE id = ?', [roomId]);
+    if (!room || room.length === 0) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
+
+    const activeAllocationsForRoom = await query(
+      'SELECT COUNT(*) AS count FROM Allocations WHERE roomId = ? AND status = ?',
+      [roomId, 'ACTIVE']
+    );
+    const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
+    if (activeCount >= Number(room[0].capacity || 0)) {
+      await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
+      return res.status(400).json({ message: 'Room is at full capacity' });
     }
 
     const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [resolvedStudentId, 'ACTIVE']);
@@ -1669,6 +1751,10 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
       const activeBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [currentRequest.roomId, 'OCCUPIED']);
       const newStatus = Number(activeBeds?.[0]?.count || 0) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
       await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, currentRequest.roomId]);
+
+      if (newStatus === 'OCCUPIED') {
+        await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [currentRequest.roomId, 'PENDING']);
+      }
 
       await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['APPROVED', requestId]);
       await query('DELETE FROM RoomRequests WHERE studentId = ? AND id <> ?', [currentRequest.studentId, requestId]);
@@ -1835,14 +1921,64 @@ app.get('/api/allocations/:id', async (req, res) => {
 
 app.post('/api/allocations', async (req, res) => {
   try {
-    const { studentId, roomId, allocated_date, status = 'ACTIVE' } = req.body;
-    
-    if (!studentId || !roomId) {
+    const { studentId, roomId, allocated_date, status = 'ACTIVE', studentData } = req.body;
+    let resolvedStudentId = toNullableInt(studentId);
+
+    if (!resolvedStudentId && studentData) {
+      const studentEmail = studentData.email;
+      if (!studentData.name || !studentEmail || !studentData.password) {
+        return res.status(400).json({ message: 'Student name, email and password are required for inline registration' });
+      }
+
+      const existingStudent = await getStudentByEmail(studentEmail);
+      if (existingStudent) {
+        resolvedStudentId = existingStudent.id;
+      } else {
+        const existingUserRows = await query('SELECT TOP 1 * FROM Users WHERE email = ?', [studentEmail]);
+        if (existingUserRows && existingUserRows.length > 0 && existingUserRows[0].role !== 'STUDENT') {
+          return res.status(400).json({ message: 'Email already belongs to a non-student account' });
+        }
+
+        await query('BEGIN TRANSACTION');
+        try {
+          if (!existingUserRows || existingUserRows.length === 0) {
+            await query(
+              'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
+              [studentData.name, studentEmail, studentData.password, 'STUDENT', null]
+            );
+          }
+
+          await query(
+            'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            [
+              studentData.name,
+              studentEmail,
+              studentData.phone || '',
+              studentData.registrationNumber || '',
+              studentData.department || '',
+              toIntOrDefault(studentData.yearOfStudy, 1),
+              'ACTIVE',
+              studentData.password,
+            ]
+          );
+
+          const insertedStudent = await query('SELECT TOP 1 * FROM Students WHERE email = ? ORDER BY id DESC', [studentEmail]);
+          resolvedStudentId = insertedStudent?.[0]?.id || null;
+
+          await query('COMMIT TRANSACTION');
+        } catch (registerErr) {
+          await query('ROLLBACK TRANSACTION');
+          throw registerErr;
+        }
+      }
+    }
+
+    if (!resolvedStudentId || !roomId) {
       return res.status(400).json({ message: 'Student and room are required' });
     }
     
     // Check if student already has an active allocation
-    const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [studentId, 'ACTIVE']);
+    const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [resolvedStudentId, 'ACTIVE']);
     if (existingAllocation && existingAllocation.length > 0) {
       return res.status(400).json({ message: 'Student already has an active room allocation' });
     }
@@ -1871,14 +2007,18 @@ app.post('/api/allocations', async (req, res) => {
     
     // Create allocation
     const checkIn = allocated_date || new Date().toISOString();
-    await query('INSERT INTO Allocations (studentId, roomId, bedId, checkInDate, status) VALUES (?, ?, ?, ?, ?)', [studentId, roomId, bedId, checkIn, status]);
-    await query('INSERT INTO StayRecords (studentId, bedId, checkInDate, status) VALUES (?, ?, ?, ?)', [studentId, bedId, checkIn, status]);
+    await query('INSERT INTO Allocations (studentId, roomId, bedId, checkInDate, status) VALUES (?, ?, ?, ?, ?)', [resolvedStudentId, roomId, bedId, checkIn, status]);
+    await query('INSERT INTO StayRecords (studentId, bedId, checkInDate, status) VALUES (?, ?, ?, ?)', [resolvedStudentId, bedId, checkIn, status]);
     await query('UPDATE Beds SET status = ? WHERE id = ?', [status === 'ACTIVE' ? 'OCCUPIED' : 'AVAILABLE', bedId]);
     
     // Update room status if now full
     const activeBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [roomId, 'OCCUPIED']);
     const newStatus = Number(activeBeds?.[0]?.count || 0) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
     await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
+
+    if (newStatus === 'OCCUPIED') {
+      await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
+    }
     
     const createdAllocation = await query(
       `SELECT TOP 1 a.id, a.studentId, a.roomId, a.bedId, a.checkInDate, a.checkOutDate, a.status,
@@ -1887,7 +2027,7 @@ app.post('/api/allocations', async (req, res) => {
        LEFT JOIN Beds b ON a.bedId = b.id
        WHERE a.studentId = ? AND a.roomId = ? AND a.bedId = ?
        ORDER BY a.id DESC`,
-      [studentId, roomId, bedId]
+      [resolvedStudentId, roomId, bedId]
     );
     res.status(201).json({
       ...(createdAllocation && createdAllocation[0] ? createdAllocation[0] : {}),

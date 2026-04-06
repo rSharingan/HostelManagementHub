@@ -1,12 +1,57 @@
 // path: src/features/settings/ProfilePage.jsx
 import { PageHeader } from '../../components/common/PageHeader'
+import { useState } from 'react'
+import { toast } from 'sonner'
 import { useAuth } from '../auth/hooks'
 import { Card, CardContent, CardHeader } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
 import { getInitials, formatDate } from '../../lib/utils'
+import Input from '../../components/ui/Input'
+import { Button } from '../../components/ui/Button'
+import { useChangePassword } from './hooks'
 
 export const ProfilePage = () => {
   const { user } = useAuth()
+  const changePassword = useChangePassword()
+  const [passwordForm, setPasswordForm] = useState({
+    currentPassword: '',
+    newPassword: '',
+    confirmPassword: '',
+  })
+
+  const onPasswordFieldChange = (field, value) => {
+    setPasswordForm((prev) => ({ ...prev, [field]: value }))
+  }
+
+  const handleChangePassword = async (e) => {
+    e.preventDefault()
+    if (!user?.email) {
+      toast.error('Could not identify logged-in user')
+      return
+    }
+
+    if (!passwordForm.currentPassword || !passwordForm.newPassword || !passwordForm.confirmPassword) {
+      toast.error('Please fill all password fields')
+      return
+    }
+
+    if (passwordForm.newPassword !== passwordForm.confirmPassword) {
+      toast.error('New password and confirm password do not match')
+      return
+    }
+
+    try {
+      await changePassword.mutateAsync({
+        email: user.email,
+        currentPassword: passwordForm.currentPassword,
+        newPassword: passwordForm.newPassword,
+      })
+      toast.success('Password changed successfully')
+      setPasswordForm({ currentPassword: '', newPassword: '', confirmPassword: '' })
+    } catch (error) {
+      toast.error(error?.response?.data?.message || 'Failed to change password')
+    }
+  }
 
   return (
     <div>
@@ -79,11 +124,44 @@ export const ProfilePage = () => {
         </Card>
       </div>
 
-      {/* TODO: Add Edit Profile, Change Password, etc. */}
-      <div className="mt-8 p-8 bg-white dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800 text-center">
-        <p className="text-slate-600 dark:text-slate-400">
-          Additional settings coming soon...
-        </p>
+      <div className="mt-8">
+        <Card>
+          <CardHeader>
+            <h3 className="text-lg font-semibold">Change Password</h3>
+          </CardHeader>
+          <CardContent>
+            <form className="space-y-4 max-w-lg" onSubmit={handleChangePassword}>
+              <Input
+                name="currentPassword"
+                label="Current Password"
+                type="password"
+                value={passwordForm.currentPassword}
+                onChange={(e) => onPasswordFieldChange('currentPassword', e.target.value)}
+                required
+              />
+              <Input
+                name="newPassword"
+                label="New Password"
+                type="password"
+                value={passwordForm.newPassword}
+                onChange={(e) => onPasswordFieldChange('newPassword', e.target.value)}
+                helperText="Use at least 6 characters"
+                required
+              />
+              <Input
+                name="confirmPassword"
+                label="Confirm New Password"
+                type="password"
+                value={passwordForm.confirmPassword}
+                onChange={(e) => onPasswordFieldChange('confirmPassword', e.target.value)}
+                required
+              />
+              <Button type="submit" disabled={changePassword.isPending}>
+                {changePassword.isPending ? 'Updating...' : 'Update Password'}
+              </Button>
+            </form>
+          </CardContent>
+        </Card>
       </div>
     </div>
   )

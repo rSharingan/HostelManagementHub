@@ -5,6 +5,7 @@ export const API_ENDPOINTS = {
     LOGIN: '/auth/login',
     LOGOUT: '/auth/logout',
     ME: '/me',
+    CHANGE_PASSWORD: '/auth/change-password',
   },
   STUDENTS: {
     LIST: '/students',

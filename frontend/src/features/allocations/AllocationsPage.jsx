@@ -26,35 +26,70 @@ export const AllocationsPage = () => {
 
   const [deleteId, setDeleteId] = useState(null)
   const [isCreateMode, setIsCreateMode] = useState(false)
+  const [registerNewStudent, setRegisterNewStudent] = useState(false)
   const [studentId, setStudentId] = useState('')
   const [roomId, setRoomId] = useState('')
   const [allocatedDate, setAllocatedDate] = useState('')
   const [status, setStatus] = useState('ACTIVE')
+  const [studentForm, setStudentForm] = useState({
+    name: '',
+    email: '',
+    password: '',
+    phone: '',
+    registrationNumber: '',
+    department: '',
+    yearOfStudy: '1',
+  })
 
   // Group allocations by room
   const roomsWithAllocations = rooms.map(room => ({
     ...room,
     allocations: allocations.filter(a => a.roomId === room.id && a.status === 'ACTIVE')
-  })).filter(room => room.allocations.length > 0 || room.status === 'AVAILABLE') // Show rooms with allocations or available
+  }))
 
-  const availableRooms = rooms.filter((room) => room.status === 'AVAILABLE')
+  const availableRooms = rooms.filter((room) => Number(room.seatsLeft ?? room.capacity ?? 0) > 0)
 
   const handleCreate = async () => {
-    if (!studentId || !roomId) {
+    if ((!studentId && !registerNewStudent) || !roomId) {
       toast.error('Please select student and room')
       return
     }
 
+    if (registerNewStudent) {
+      if (!studentForm.name || !studentForm.email || !studentForm.password) {
+        toast.error('Please provide student name, email and password')
+        return
+      }
+      if (studentForm.password.length < 6) {
+        toast.error('Student password must be at least 6 characters long')
+        return
+      }
+    }
+
     try {
-      await createAllocation.mutateAsync({ studentId, roomId, allocated_date: allocatedDate, status })
+      await createAllocation.mutateAsync(
+        registerNewStudent
+          ? { roomId, allocated_date: allocatedDate, status, studentData: { ...studentForm } }
+          : { studentId, roomId, allocated_date: allocatedDate, status },
+      )
       toast.success('Allocation created successfully')
       setIsCreateMode(false)
+      setRegisterNewStudent(false)
       setStudentId('')
       setRoomId('')
       setAllocatedDate('')
       setStatus('ACTIVE')
+      setStudentForm({
+        name: '',
+        email: '',
+        password: '',
+        phone: '',
+        registrationNumber: '',
+        department: '',
+        yearOfStudy: '1',
+      })
     } catch (error) {
-      toast.error('Failed to create allocation')
+      toast.error(error?.response?.data?.message || 'Failed to create allocation')
     }
   }
 
@@ -86,6 +121,13 @@ export const AllocationsPage = () => {
     {
       header: 'Capacity',
       accessorKey: 'capacity',
+    },
+    {
+      header: 'Seats Left',
+      cell: ({ row }) => {
+        const seatsLeft = Number(row.original.seatsLeft ?? 0)
+        return <span className={seatsLeft === 0 ? 'text-red-600 font-medium' : 'text-green-700 font-medium'}>{seatsLeft}</span>
+      },
     },
     {
       header: 'Allocated Students',
@@ -156,12 +198,39 @@ export const AllocationsPage = () => {
 
       {isCreateMode && (
         <div className="mb-6">
+          <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div>
+              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300">Allocation Mode</label>
+              <select
+                value={registerNewStudent ? 'NEW_STUDENT' : 'EXISTING_STUDENT'}
+                onChange={(e) => {
+                  const isNew = e.target.value === 'NEW_STUDENT'
+                  setRegisterNewStudent(isNew)
+                  if (isNew) {
+                    setStudentId('')
+                  }
+                }}
+                className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-blue-500"
+              >
+                <option value="EXISTING_STUDENT">Allocate Existing Student</option>
+                <option value="NEW_STUDENT">Register Student and Allocate</option>
+              </select>
+            </div>
+            <div className="flex items-end text-sm text-slate-600 dark:text-slate-300">
+              Direct allocations are immediate and do not require room request approval.
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
             <div>
               <label className="block text-sm font-medium text-slate-600 dark:text-slate-300">
                 Student
               </label>
-              {studentsError ? (
+              {registerNewStudent ? (
+                <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                  New student will be registered from the form below.
+                </div>
+              ) : studentsError ? (
                 <p className="text-red-600 text-sm">Failed to load students</p>
               ) : (
                 <select
@@ -196,7 +265,7 @@ export const AllocationsPage = () => {
                   <option value="">Select Room</option>
                   {availableRooms.map((room) => (
                     <option key={room.id} value={room.id}>
-                      {room.roomNumber} (Block {room.block} - {room.type})
+                      {room.roomNumber} (Block {room.block} - {room.type}, Seats Left: {room.seatsLeft ?? 0})
                     </option>
                   ))}
                 </select>
@@ -224,7 +293,6 @@ export const AllocationsPage = () => {
                 className="mt-1 block w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:outline-none focus:ring-blue-500"
               >
                 <option value="ACTIVE">Active</option>
-                <option value="RELEASED">Released</option>
               </select>
             </div>
 
@@ -232,13 +300,67 @@ export const AllocationsPage = () => {
               <Button
                 onClick={handleCreate}
                 loading={createAllocation.isPending}
-                disabled={availableRooms.length === 0 || !studentId || !roomId}
+                disabled={availableRooms.length === 0 || (!registerNewStudent && !studentId) || !roomId}
                 className="w-full"
               >
                 Save Allocation
               </Button>
             </div>
           </div>
+
+          {registerNewStudent && (
+            <div className="mt-4 grid grid-cols-1 gap-4 sm:grid-cols-3">
+              <Input
+                name="studentName"
+                label="Student Name"
+                value={studentForm.name}
+                onChange={(e) => setStudentForm((prev) => ({ ...prev, name: e.target.value }))}
+                required
+              />
+              <Input
+                name="studentEmail"
+                label="Student Email"
+                type="email"
+                value={studentForm.email}
+                onChange={(e) => setStudentForm((prev) => ({ ...prev, email: e.target.value }))}
+                required
+              />
+              <Input
+                name="studentPassword"
+                label="Password"
+                type="password"
+                value={studentForm.password}
+                onChange={(e) => setStudentForm((prev) => ({ ...prev, password: e.target.value }))}
+                required
+              />
+              <Input
+                name="studentPhone"
+                label="Phone"
+                value={studentForm.phone}
+                onChange={(e) => setStudentForm((prev) => ({ ...prev, phone: e.target.value }))}
+              />
+              <Input
+                name="studentRegistrationNumber"
+                label="Registration Number"
+                value={studentForm.registrationNumber}
+                onChange={(e) => setStudentForm((prev) => ({ ...prev, registrationNumber: e.target.value }))}
+              />
+              <Input
+                name="studentDepartment"
+                label="Department"
+                value={studentForm.department}
+                onChange={(e) => setStudentForm((prev) => ({ ...prev, department: e.target.value }))}
+              />
+              <Input
+                name="studentYearOfStudy"
+                label="Year of Study"
+                type="number"
+                min="1"
+                value={studentForm.yearOfStudy}
+                onChange={(e) => setStudentForm((prev) => ({ ...prev, yearOfStudy: e.target.value }))}
+              />
+            </div>
+          )}
         </div>
       )}
 
