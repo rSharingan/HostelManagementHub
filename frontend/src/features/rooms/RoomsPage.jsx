@@ -30,7 +30,10 @@ export const RoomsPage = () => {
     hasBalcony: false,
   })
   const createRoomRequest = useCreateRoomRequest()
-  const { data: roomRequests = [] } = useRoomRequests(undefined, user?.role === 'STUDENT')
+  const { data: roomRequests = [] } = useRoomRequests(
+    user?.role === 'STUDENT' ? { studentEmail: user?.email } : undefined,
+    user?.role === 'STUDENT',
+  )
 
   const requestedRoomIds = useMemo(() => {
     if (user?.role !== 'STUDENT') {
@@ -38,7 +41,7 @@ export const RoomsPage = () => {
     }
 
     const roomIds = roomRequests
-      .filter((request) => String(request.studentId) === String(user?.id) && request.status !== 'REJECTED')
+      .filter((request) => request.status === 'PENDING')
       .map((request) => String(request.roomId))
 
     optimisticRequestedRoomIds.forEach((roomId) => {
@@ -48,7 +51,7 @@ export const RoomsPage = () => {
     })
 
     return new Set(roomIds)
-  }, [optimisticRequestedRoomIds, roomRequests, user?.id, user?.role])
+  }, [optimisticRequestedRoomIds, roomRequests, user?.role])
 
   const filteredRooms = useMemo(() => {
     return rooms.filter((room) => {
@@ -85,7 +88,7 @@ export const RoomsPage = () => {
     try {
       setApplyingRoomId(room.id)
       await createRoomRequest.mutateAsync({
-        studentId: user.id,
+        studentEmail: user.email,
         roomId: room.id,
       })
       setOptimisticRequestedRoomIds((current) =>
@@ -93,7 +96,7 @@ export const RoomsPage = () => {
       )
       toast.success('Room request submitted successfully')
     } catch (error) {
-      toast.error('Failed to apply for room')
+      toast.error(error?.response?.data?.message || 'Failed to apply for room')
     } finally {
       setApplyingRoomId(null)
     }
@@ -140,6 +143,13 @@ export const RoomsPage = () => {
       accessorKey: 'capacity',
     },
     {
+      header: 'Seats Left',
+      cell: ({ row }) => {
+        const seatsLeft = Number(row.original.seatsLeft ?? row.original.capacity ?? 0)
+        return <span className={seatsLeft === 0 ? 'text-red-600 font-medium' : 'text-green-700 font-medium'}>{seatsLeft}</span>
+      },
+    },
+    {
       header: 'Allocated Students',
       cell: ({ row }) => {
         const allocated = row.original.allocatedStudents || [];
@@ -160,19 +170,15 @@ export const RoomsPage = () => {
     {
       header: 'Status',
       accessorKey: 'status',
-      cell: ({ row }) => (
-        <Badge
-          variant={
-            row.original.status === 'AVAILABLE'
-              ? 'success'
-              : row.original.status === 'OCCUPIED'
-                ? 'primary'
-                : 'warning'
-          }
-        >
-          {row.original.status}
-        </Badge>
-      ),
+      cell: ({ row }) => {
+        const seatsLeft = Number(row.original.seatsLeft ?? row.original.capacity ?? 0)
+        const isFull = seatsLeft === 0
+        return (
+          <Badge variant={isFull ? 'primary' : 'success'}>
+            {isFull ? 'FULL' : 'AVAILABLE'}
+          </Badge>
+        )
+      },
     },
     {
       header: 'Rental Cost',
@@ -183,7 +189,8 @@ export const RoomsPage = () => {
       header: 'Actions',
       cell: ({ row }) => {
         const isAdmin = user?.role === 'ADMIN'
-        const isAvailable = row.original.status === 'AVAILABLE'
+        const seatsLeft = Number(row.original.seatsLeft ?? row.original.capacity ?? 0)
+        const isAvailable = seatsLeft > 0
         const isRequested = requestedRoomIds.has(String(row.original.id))
         
         if (isAdmin) {
@@ -224,7 +231,7 @@ export const RoomsPage = () => {
                   Apply
                 </Button>
               ) : (
-                <Badge variant="secondary">Occupied</Badge>
+                <Badge variant="secondary">Full</Badge>
               )}
             </div>
           )

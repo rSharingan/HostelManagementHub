@@ -169,11 +169,12 @@ async function ensureBedsForRoom(roomId, capacity) {
   }
 }
 
-async function getAvailableBed(roomId) {
-  const result = await query(
-    'SELECT TOP 1 * FROM Beds WHERE roomId = ? AND status = ? ORDER BY bedNumber ASC',
-    [roomId, 'AVAILABLE']
-  );
+async function getAvailableBed(roomId, maxBedNumber = null) {
+  const sqlText = maxBedNumber
+    ? 'SELECT TOP 1 * FROM Beds WHERE roomId = ? AND status = ? AND bedNumber <= ? ORDER BY bedNumber ASC'
+    : 'SELECT TOP 1 * FROM Beds WHERE roomId = ? AND status = ? ORDER BY bedNumber ASC';
+  const params = maxBedNumber ? [roomId, 'AVAILABLE', maxBedNumber] : [roomId, 'AVAILABLE'];
+  const result = await query(sqlText, params);
   if (!result || result.length === 0) {
     return null;
   }
@@ -353,6 +354,7 @@ async function ensureFeatureTables() {
 
   // Backward compatibility: older manual scripts used requestDate instead of requestedDate.
   await ensureColumnExists('RoomRequests', 'requestedDate', 'requestedDate DATETIME2 DEFAULT GETDATE()')
+  await ensureColumnExists('RoomRequests', 'requestDate', 'requestDate DATETIME2 NOT NULL DEFAULT GETDATE()')
 
   await query(`
     IF OBJECT_ID('dbo.OccupancyReport', 'U') IS NULL
@@ -638,6 +640,7 @@ app.get('/api/rooms', async (req, res) => {
       const allocations = allocationRows.filter((a) => a.roomId === room.id);
       const currentOccupancy = allocations.length;
       const computedStatus = currentOccupancy >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
+      const seatsLeft = Math.max(0, Number(room.capacity || 0) - currentOccupancy);
 
       if (room.status !== computedStatus) {
         await query('UPDATE Rooms SET status = ? WHERE id = ?', [computedStatus, room.id]);
@@ -646,6 +649,8 @@ app.get('/api/rooms', async (req, res) => {
       roomsWithAllocations.push({
         ...room,
         status: computedStatus,
+        occupiedSeats: currentOccupancy,
+        seatsLeft,
         allocatedStudents: allocations.map((a) => ({
           id: a.studentId,
           name: a.studentName,
@@ -692,45 +697,46 @@ app.post('/api/rooms', async (req, res) => {
 app.post('/api/rooms/:id/apply', async (req, res) => {
   try {
     const roomId = Number(req.params.id);
-    const auth = req.headers.authorization || '';
-    const token = auth.replace('Bearer ', '');
-    // Get current user (for demo, assume student id is 1, in real app decode token)
-    const studentId = 1; // This should come from decoded token
-    
-    // Check current allocations for the room
-    const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
-    
-    if (!room || room.length === 0) {
-      return res.status(404).json({ message: 'Room not found' });
+    const payload = req.body || {};
+    let studentId = toNullableInt(payload.studentId);
+
+    if (!studentId && payload.studentEmail) {
+      const student = await getStudentByEmail(payload.studentEmail);
+      studentId = student?.id || null;
     }
 
-    await ensureBedsForRoom(roomId, room[0].capacity);
-    const bed = await getAvailableBed(roomId);
-    const bedId = getRowId(bed);
-    if (!bedId) {
-      return res.status(400).json({ message: 'Room is at full capacity' });
+    if (!studentId) {
+      return res.status(400).json({ message: 'Student identity is required to apply for a room' });
     }
-    
-    // Check if student already has an active allocation
+
     const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [studentId, 'ACTIVE']);
     if (existingAllocation && existingAllocation.length > 0) {
       return res.status(400).json({ message: 'Student already has an active room allocation' });
     }
-    
-    // Create allocation and stay record using an available bed
-    await query('INSERT INTO Allocations (studentId, roomId, bedId, checkInDate, status) VALUES (?, ?, ?, GETDATE(), ?)', [studentId, roomId, bedId, 'ACTIVE']);
-    await query('INSERT INTO StayRecords (studentId, bedId, checkInDate, status) VALUES (?, ?, GETDATE(), ?)', [studentId, bedId, 'ACTIVE']);
-    await query('UPDATE Beds SET status = ? WHERE id = ?', ['OCCUPIED', bedId]);
-    
-    // Update room status if now full
-    const activeBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [roomId, 'OCCUPIED']);
-    const newStatus = Number(activeBeds?.[0]?.count || 0) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
-    await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
-    
-    res.json({ message: 'Room applied successfully', bedId });
+
+    const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
+    if (!room || room.length === 0) {
+      return res.status(404).json({ message: 'Room not found' });
+    }
+
+    const existingRequest = await query(
+      'SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN (?, ?)',
+      [studentId, roomId, 'PENDING', 'APPROVED']
+    );
+
+    if (existingRequest && existingRequest.length > 0) {
+      return res.status(400).json({ message: 'You have already requested this room' });
+    }
+
+    await query(
+      'INSERT INTO RoomRequests (studentId, roomId, status, requestDate) VALUES (?, ?, ?, GETDATE())',
+      [studentId, roomId, 'PENDING']
+    );
+
+    res.status(201).json({ message: 'Room request submitted successfully', studentId, roomId });
   } catch (err) {
     console.error('Apply room error:', err);
-    res.status(500).json({ message: 'Internal server error' });
+    res.status(500).json({ message: err.message || 'Internal server error' });
   }
 });
 
@@ -741,7 +747,23 @@ app.get('/api/rooms/:id', async (req, res) => {
     if (!result || result.length === 0) {
       return res.status(404).json({ message: 'Not found' });
     }
-    res.json(result[0]);
+
+    const room = result[0];
+    const activeAllocations = await query('SELECT COUNT(*) AS count FROM Allocations WHERE roomId = ? AND status = ?', [id, 'ACTIVE']);
+    const occupiedSeats = Number(activeAllocations?.[0]?.count || 0);
+    const seatsLeft = Math.max(0, Number(room.capacity || 0) - occupiedSeats);
+    const computedStatus = seatsLeft === 0 ? 'OCCUPIED' : 'AVAILABLE';
+
+    if (room.status !== computedStatus) {
+      await query('UPDATE Rooms SET status = ? WHERE id = ?', [computedStatus, id]);
+    }
+
+    res.json({
+      ...room,
+      status: computedStatus,
+      occupiedSeats,
+      seatsLeft,
+    });
   } catch (err) {
     console.error('Get room detail error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1505,16 +1527,27 @@ app.get('/api/users', async (req, res) => {
 
 app.post('/api/room-requests', async (req, res) => {
   try {
-    const { studentId, roomId } = req.body;
+    const { studentId, studentEmail, roomId } = req.body;
+    let resolvedStudentId = toNullableInt(studentId);
 
-    if (!studentId || !roomId) {
+    if (!resolvedStudentId && studentEmail) {
+      const student = await getStudentByEmail(studentEmail);
+      resolvedStudentId = student?.id || null;
+    }
+
+    if (!resolvedStudentId || !roomId) {
       return res.status(400).json({ message: 'Student ID and Room ID are required' });
+    }
+
+    const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [resolvedStudentId, 'ACTIVE']);
+    if (existingAllocation && existingAllocation.length > 0) {
+      return res.status(400).json({ message: 'Student already has an active room allocation' });
     }
 
     // Check if student already has a pending or approved request for this room
     const existingRequest = await query(
       'SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN (?, ?)',
-      [studentId, roomId, 'PENDING', 'APPROVED']
+      [resolvedStudentId, roomId, 'PENDING', 'APPROVED']
     );
 
     if (existingRequest && existingRequest.length > 0) {
@@ -1523,14 +1556,14 @@ app.post('/api/room-requests', async (req, res) => {
 
     // Create the request
     await query(
-      'INSERT INTO RoomRequests (studentId, roomId, status, requestedDate) VALUES (?, ?, ?, GETDATE())',
-      [studentId, roomId, 'PENDING']
+      'INSERT INTO RoomRequests (studentId, roomId, status, requestDate) VALUES (?, ?, ?, GETDATE())',
+      [resolvedStudentId, roomId, 'PENDING']
     );
 
-    res.status(201).json({ message: 'Room request submitted successfully' });
+    res.status(201).json({ message: 'Room request submitted successfully', studentId: resolvedStudentId, roomId });
   } catch (err) {
     console.error('Create room request error:', err);
-    res.status(500).json({ message: 'Internal server error' });
+    res.status(500).json({ message: err.message || 'Internal server error' });
   }
 });
 
@@ -1540,14 +1573,26 @@ app.post('/api/room-requests', async (req, res) => {
 
 app.get('/api/room-requests', async (req, res) => {
   try {
+    const { studentEmail } = req.query;
+    const params = [];
+    let whereClause = '';
+
+    if (studentEmail) {
+      whereClause = 'WHERE s.email = ?';
+      params.push(studentEmail);
+    }
+
     const result = await query(`
-      SELECT rr.id, rr.status,
+            SELECT rr.id, rr.studentId, rr.roomId, rr.status,
              s.name AS studentName,
+             s.email AS studentEmail,
              r.roomNumber
       FROM RoomRequests rr
       JOIN Students s ON rr.studentId = s.id
       JOIN Rooms r ON rr.roomId = r.id
-    `);
+      ${whereClause}
+            ORDER BY rr.id DESC
+    `, params);
 
     res.json(result);
 
@@ -1561,23 +1606,87 @@ app.get('/api/room-requests', async (req, res) => {
 ========================= */
 
 app.put('/api/room-requests/:id/approve', async (req, res) => {
-  const requestId = Number(req.params.id)
+  try {
+    const requestId = Number(req.params.id);
+    const request = await query(
+      'SELECT TOP 1 rr.id, rr.studentId, rr.roomId, rr.status, s.email AS studentEmail, r.capacity FROM RoomRequests rr JOIN Students s ON rr.studentId = s.id JOIN Rooms r ON rr.roomId = r.id WHERE rr.id = ?',
+      [requestId]
+    );
 
-  const request = await query(
-    'SELECT * FROM RoomRequests WHERE id = ?',
-    [requestId]
-  )
+    if (!request || request.length === 0) {
+      return res.status(404).json({ message: 'Room request not found' });
+    }
 
-  const { studentId, roomId } = request[0]
+    const currentRequest = request[0];
+    if (currentRequest.status === 'APPROVED') {
+      return res.json({ message: 'Approved successfully' });
+    }
+    if (currentRequest.status !== 'PENDING') {
+      return res.status(400).json({ message: 'Only pending requests can be approved' });
+    }
 
-  await query(
-    'UPDATE RoomRequests SET status = ? WHERE id = ?',
-    ['APPROVED', requestId]
-  )
+    const existingAllocation = await query(
+      'SELECT * FROM Allocations WHERE studentId = ? AND status = ?',
+      [currentRequest.studentId, 'ACTIVE']
+    );
+    if (existingAllocation && existingAllocation.length > 0) {
+      return res.status(400).json({ message: 'Student already has an active room allocation' });
+    }
 
-  
+    await query('BEGIN TRANSACTION');
+    try {
+      const room = await query('SELECT TOP 1 * FROM Rooms WHERE id = ?', [currentRequest.roomId]);
+      if (!room || room.length === 0) {
+        throw new Error('Room not found');
+      }
 
-  res.json({ message: 'Approved successfully' })
+      const activeAllocationsForRoom = await query(
+        'SELECT COUNT(*) AS count FROM Allocations WHERE roomId = ? AND status = ?',
+        [currentRequest.roomId, 'ACTIVE']
+      );
+      const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
+      if (activeCount >= Number(room[0].capacity || 0)) {
+        throw new Error('Room is at full capacity');
+      }
+
+      await ensureBedsForRoom(currentRequest.roomId, room[0].capacity);
+      const bed = await getAvailableBed(currentRequest.roomId, Number(room[0].capacity || 0));
+      const bedId = getRowId(bed);
+      if (!bedId) {
+        throw new Error('Room is at full capacity');
+      }
+
+      await query(
+        'INSERT INTO Allocations (studentId, roomId, bedId, checkInDate, status) VALUES (?, ?, ?, GETDATE(), ?)',
+        [currentRequest.studentId, currentRequest.roomId, bedId, 'ACTIVE']
+      );
+      await query(
+        'INSERT INTO StayRecords (studentId, bedId, checkInDate, status) VALUES (?, ?, GETDATE(), ?)',
+        [currentRequest.studentId, bedId, 'ACTIVE']
+      );
+      await query('UPDATE Beds SET status = ? WHERE id = ?', ['OCCUPIED', bedId]);
+
+      const activeBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [currentRequest.roomId, 'OCCUPIED']);
+      const newStatus = Number(activeBeds?.[0]?.count || 0) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
+      await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, currentRequest.roomId]);
+
+      await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['APPROVED', requestId]);
+      await query('DELETE FROM RoomRequests WHERE studentId = ? AND id <> ?', [currentRequest.studentId, requestId]);
+      await query('COMMIT TRANSACTION');
+
+      res.json({ message: 'Approved successfully', bedId });
+    } catch (approveError) {
+      await query('ROLLBACK TRANSACTION');
+      throw approveError;
+    }
+  } catch (err) {
+    console.error('Approve room request error:', err);
+    const message = err.message || 'Internal server error';
+    if (message === 'Room is at full capacity') {
+      return res.status(400).json({ message });
+    }
+    res.status(500).json({ message });
+  }
 })
 
 app.get('/api/reports/occupancy', async (req, res) => {
@@ -1744,8 +1853,17 @@ app.post('/api/allocations', async (req, res) => {
       return res.status(404).json({ message: 'Room not found' });
     }
 
+    const activeAllocationsForRoom = await query(
+      'SELECT COUNT(*) AS count FROM Allocations WHERE roomId = ? AND status = ?',
+      [roomId, 'ACTIVE']
+    );
+    const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
+    if (activeCount >= Number(room[0].capacity || 0)) {
+      return res.status(400).json({ message: 'Room is at full capacity' });
+    }
+
     await ensureBedsForRoom(roomId, room[0].capacity);
-    const bed = await getAvailableBed(roomId);
+    const bed = await getAvailableBed(roomId, Number(room[0].capacity || 0));
     const bedId = getRowId(bed);
     if (!bedId) {
       return res.status(400).json({ message: 'Room is at full capacity' });

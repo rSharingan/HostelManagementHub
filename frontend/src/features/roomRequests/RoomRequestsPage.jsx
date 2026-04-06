@@ -50,7 +50,7 @@ export const RoomRequestsPage = () => {
       await approveRoomRequest.mutateAsync(requestId)
       toast.success('Room request approved successfully')
     } catch (approveError) {
-      toast.error('Failed to approve room request')
+      toast.error(approveError?.response?.data?.message || 'Failed to approve room request')
     }
   }
 
