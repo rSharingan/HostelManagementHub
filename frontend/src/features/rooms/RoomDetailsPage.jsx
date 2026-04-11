@@ -110,26 +110,31 @@ export const RoomDetailsPage = () => {
           </CardHeader>
           <CardContent>
             <div className="overflow-x-auto">
-              <table className="min-w-full text-sm border border-slate-200 dark:border-slate-700">
+              <table className="min-w-full text-sm border border-gray-200 dark:border-dark-700">
                 <tbody>
                   {attributes.map((item) => (
-                    <tr key={item.label} className="border-b border-slate-200 dark:border-slate-700 last:border-b-0">
-                      <th className="w-1/3 px-4 py-3 text-left bg-slate-50 dark:bg-slate-800 font-medium">{item.label}</th>
-                      <td className="px-4 py-3 text-slate-700 dark:text-slate-300">{item.value}</td>
+                    <tr key={item.label} className="border-b border-gray-200 dark:border-dark-700 last:border-b-0">
+                      <th className="w-1/3 px-4 py-3 text-left bg-gray-50 dark:bg-dark-800 font-medium text-gray-900 dark:text-dark-50">{item.label}</th>
+                      <td className="px-4 py-3 text-gray-700 dark:text-dark-300">{item.value}</td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
 
-            <div className="mt-4 flex items-center gap-3">
+            <div className="mt-6 flex items-center gap-3">
               <Badge variant={isFull ? 'primary' : 'success'}>
                 {isFull ? 'FULL' : 'AVAILABLE'}
               </Badge>
               {user?.role === 'STUDENT' && !isFull && (
-                <Button onClick={handleApply} disabled={createRoomRequest.isPending || isRequested}>
-                  {isRequested ? 'Requested' : 'Apply for this Room'}
-                </Button>
+                <div className="flex gap-3">
+                  <Button onClick={handleApply} disabled={createRoomRequest.isPending || isRequested} variant="primary">
+                    {isRequested ? 'Requested' : 'Apply for this Room'}
+                  </Button>
+                  <Button onClick={() => navigate('/rooms')} variant="secondary">
+                    Cancel
+                  </Button>
+                </div>
               )}
             </div>
           </CardContent>

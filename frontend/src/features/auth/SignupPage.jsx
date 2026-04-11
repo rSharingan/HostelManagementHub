@@ -41,7 +41,7 @@ export const SignupPage = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 dark:from-slate-950 dark:via-slate-900 dark:to-slate-800 flex items-center justify-center p-4 animate-gradient">
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 dark:from-dark-950 dark:via-dark-900 dark:to-dark-800 flex items-center justify-center p-4 animate-gradient">
       <div className="absolute inset-0 bg-gradient-to-br from-blue-400/20 via-purple-400/20 to-pink-400/20 dark:from-blue-600/10 dark:via-purple-600/10 dark:to-pink-600/10 animate-pulse-glow"></div>
       <Card className="w-full max-w-md glass animate-fade-in-up relative z-10" variant="glass">
         <CardHeader className="text-center border-0 pb-0">
@@ -49,10 +49,10 @@ export const SignupPage = () => {
             <div className="w-16 h-16 bg-gradient-to-br from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center mx-auto mb-4 shadow-lg animate-pulse-glow">
               <span className="text-2xl font-bold text-white">HMS</span>
             </div>
-            <h1 className="text-3xl font-bold bg-gradient-to-r from-slate-900 to-slate-700 dark:from-slate-100 dark:to-slate-300 bg-clip-text text-transparent mb-2">
+            <h1 className="text-3xl font-bold bg-gradient-to-r from-gray-900 to-gray-700 dark:from-cyan-400 dark:to-blue-400 bg-clip-text text-transparent mb-2">
               Hostel Management System
             </h1>
-            <p className="text-slate-600 dark:text-slate-400 text-sm">
+            <p className="text-gray-600 dark:text-dark-400 text-sm">
               Create your account to get started
             </p>
           </div>
@@ -80,13 +80,13 @@ export const SignupPage = () => {
               />
 
               <div>
-                <label className="block text-sm font-semibold text-slate-700 dark:text-slate-300 mb-3">
+                <label className="block text-sm font-semibold text-gray-700 dark:text-dark-300 mb-3">
                   Role
                 </label>
                 <select
                   value={formData.role}
                   onChange={(e) => handleChange('role', e.target.value)}
-                  className="w-full px-4 py-3 border-2 border-slate-200 dark:border-slate-600 rounded-xl bg-white/80 dark:bg-slate-800/80 backdrop-blur-sm text-slate-900 dark:text-slate-100 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 hover:border-blue-300 dark:hover:border-blue-400"
+                  className="w-full px-4 py-3 border-2 border-gray-200 dark:border-dark-600 rounded-xl bg-white/80 dark:bg-dark-800/80 backdrop-blur-sm text-gray-900 dark:text-dark-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 hover:border-blue-300 dark:hover:border-blue-400"
                   required
                 >
                   <option value="">Select your role</option>
@@ -160,7 +160,7 @@ export const SignupPage = () => {
             </Button>
 
             <div className="text-center">
-              <p className="text-slate-600 dark:text-slate-400">
+              <p className="text-gray-600 dark:text-dark-400">
                 Already have an account?{' '}
                 <Link to="/login" className="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-semibold transition-colors duration-200">
                   Sign in here

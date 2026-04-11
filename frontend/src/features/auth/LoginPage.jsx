@@ -30,14 +30,40 @@ export const LoginPage = () => {
   }
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-slate-950 dark:to-slate-900 flex items-center justify-center p-4">
-      <Card className="w-full max-w-md">
+    <div className="min-h-screen relative overflow-hidden flex items-center justify-center p-4">
+      {/* Login Page Background - Student Logo Pattern */}
+      <div className="absolute inset-0 -z-10">
+        {/* Main gradient background */}
+        <div className="absolute inset-0 bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700 dark:from-slate-950 dark:via-indigo-950 dark:to-slate-900"></div>
+        
+        {/* Decorative SVG pattern - Student caps/books */}
+        <svg className="absolute top-0 left-0 w-full h-full opacity-10 dark:opacity-20" viewBox="0 0 1000 1000" preserveAspectRatio="xMidYMid slice">
+          <defs>
+            <pattern id="studentPattern" x="0" y="0" width="200" height="200" patternUnits="userSpaceOnUse">
+              {/* Student cap icons scattered */}
+              <path d="M 50 80 L 100 50 L 150 80 L 100 100 Z" fill="white" opacity="0.6"/>
+              <rect x="40" y="85" width="120" height="8" fill="white" opacity="0.4"/>
+              {/* Open book */}
+              <path d="M 30 120 L 50 110 L 50 130 Z" fill="white" opacity="0.5"/>
+              <path d="M 170 120 L 150 110 L 150 130 Z" fill="white" opacity="0.5"/>
+              <rect x="50" y="115" width="100" height="10" fill="white" opacity="0.4"/>
+            </pattern>
+          </defs>
+          <rect width="1000" height="1000" fill="url(#studentPattern)"/>
+        </svg>
+
+        {/* Floating shapes for visual interest */}
+        <div className="absolute top-10 right-10 w-40 h-40 bg-blue-400 opacity-10 dark:opacity-5 rounded-full blur-3xl animate-float-slow"></div>
+        <div className="absolute bottom-20 left-10 w-60 h-60 bg-purple-400 opacity-10 dark:opacity-5 rounded-full blur-3xl animate-float-slower" style={{animationDelay: '2s'}}></div>
+      </div>
+
+      <Card className="w-full max-w-md relative z-10 shadow-2xl">
         <CardHeader className="text-center border-0 pb-0">
           <div className="mb-6">
-            <h1 className="text-3xl font-bold text-slate-900 dark:text-slate-50">
+            <h1 className="text-3xl font-bold text-gray-900 dark:text-dark-50">
               HMS
             </h1>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mt-2">
+            <p className="text-sm text-gray-600 dark:text-dark-400 mt-2">
               Hostel Management System
             </p>
           </div>
@@ -77,20 +103,20 @@ export const LoginPage = () => {
               {loading ? 'Logging in...' : 'Login'}
             </Button>
 
-            <div className="mt-4 pt-4 border-t border-slate-200 dark:border-slate-800">
-              <p className="text-xs text-slate-600 dark:text-slate-400 text-center">
+            <div className="mt-4 pt-4 border-t border-gray-200 dark:border-dark-800">
+              <p className="text-xs text-gray-600 dark:text-dark-400 text-center">
                 Demo Credentials:
               </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 text-center mt-1">
+              <p className="text-xs text-gray-500 dark:text-dark-400 text-center mt-1">
                 Email: admin@hostel.com
               </p>
-              <p className="text-xs text-slate-500 dark:text-slate-400 text-center">
+              <p className="text-xs text-gray-500 dark:text-dark-400 text-center">
                 Password: password
               </p>
             </div>
 
             <div className="mt-4 text-center">
-              <p className="text-sm text-slate-600 dark:text-slate-400">
+              <p className="text-sm text-gray-600 dark:text-dark-400">
                 Don't have an account?{' '}
                 <Link to="/signup" className="text-blue-600 dark:text-blue-400 hover:underline">
                   Sign up here

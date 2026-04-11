@@ -10,7 +10,7 @@ const Input = forwardRef(function Input(
   return (
     <div className={cn('w-full', className)}>
       {label && (
-        <label htmlFor={name} className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">{label}</label>
+        <label htmlFor={name} className="block text-sm font-medium text-gray-700 dark:text-dark-100 mb-2">{label}</label>
       )}
       <Component
         id={name}
@@ -19,16 +19,15 @@ const Input = forwardRef(function Input(
         ref={ref}
         {...props}
         className={cn(
-          'w-full px-3 py-2 border border-slate-300 rounded-lg',
-          'focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent',
-          'bg-white text-slate-900 dark:bg-slate-800 dark:text-slate-100',
-          'placeholder:text-slate-500 dark:placeholder:text-slate-400',
-          'disabled:bg-slate-100 dark:disabled:bg-slate-700 disabled:cursor-not-allowed',
-          error && 'border-red-500 focus:ring-red-500'
+          'w-full px-4 py-3 bg-white dark:bg-dark-800 border border-gray-300 dark:border-dark-700 text-gray-900 dark:text-dark-50 rounded-lg transition-all duration-300',
+          'focus:outline-none focus:ring-2 focus:ring-cyan-500 focus:border-transparent dark:focus:ring-cyan-400',
+          'placeholder:text-gray-400 dark:placeholder:text-dark-500',
+          'disabled:opacity-50 disabled:cursor-not-allowed',
+          error && 'border-red-500/50 dark:border-red-500/50 bg-red-50 dark:bg-red-500/5'
         )}
       />
-      {error && <p className="text-red-500 text-sm mt-1">{error}</p>}
-      {helperText && !error && <p className="text-slate-500 text-sm mt-1">{helperText}</p>}
+      {error && <p className="text-red-500 dark:text-red-400 text-sm mt-2">{error}</p>}
+      {helperText && !error && <p className="text-gray-500 dark:text-dark-400 text-sm mt-2">{helperText}</p>}
     </div>
   );
 });

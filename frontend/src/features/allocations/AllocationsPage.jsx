@@ -134,7 +134,7 @@ export const AllocationsPage = () => {
       cell: ({ row }) => {
         const allocations = row.original.allocations || [];
         if (allocations.length === 0) {
-          return <span className="text-gray-500">No students allocated</span>;
+          return <span className="text-gray-500 dark:text-dark-400">No students allocated</span>;
         }
         return (
           <div className="flex flex-col gap-1">
@@ -200,7 +200,7 @@ export const AllocationsPage = () => {
         <div className="mb-6">
           <div className="mb-4 grid grid-cols-1 gap-2 sm:grid-cols-2">
             <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300">Allocation Mode</label>
+              <label className="block text-sm font-medium text-gray-600 dark:text-dark-300">Allocation Mode</label>
               <select
                 value={registerNewStudent ? 'NEW_STUDENT' : 'EXISTING_STUDENT'}
                 onChange={(e) => {
@@ -216,18 +216,18 @@ export const AllocationsPage = () => {
                 <option value="NEW_STUDENT">Register Student and Allocate</option>
               </select>
             </div>
-            <div className="flex items-end text-sm text-slate-600 dark:text-slate-300">
+            <div className="flex items-end text-sm text-gray-600 dark:text-dark-300">
               Direct allocations are immediate and do not require room request approval.
             </div>
           </div>
 
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-4">
             <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300">
+              <label className="block text-sm font-medium text-gray-600 dark:text-dark-300">
                 Student
               </label>
               {registerNewStudent ? (
-                <div className="mt-1 rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+                <div className="mt-1 rounded-md border border-gray-200 dark:border-dark-600 bg-gray-50 dark:bg-dark-800 px-3 py-2 text-sm text-gray-700 dark:text-dark-300">
                   New student will be registered from the form below.
                 </div>
               ) : studentsError ? (
@@ -249,7 +249,7 @@ export const AllocationsPage = () => {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300">
+              <label className="block text-sm font-medium text-gray-600 dark:text-dark-300">
                 Room
               </label>
               {roomsError ? (
@@ -273,7 +273,7 @@ export const AllocationsPage = () => {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300">
+              <label className="block text-sm font-medium text-gray-600 dark:text-dark-300">
                 Allocated Date
               </label>
               <Input
@@ -284,7 +284,7 @@ export const AllocationsPage = () => {
             </div>
 
             <div>
-              <label className="block text-sm font-medium text-slate-600 dark:text-slate-300">
+              <label className="block text-sm font-medium text-gray-600 dark:text-dark-300">
                 Status
               </label>
               <select

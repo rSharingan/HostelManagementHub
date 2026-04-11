@@ -77,4 +77,10 @@ export const API_ENDPOINTS = {
     DUES: '/reports/dues',
     MAINTENANCE: '/reports/maintenance',
   },
+  ANALYTICS: {
+    OCCUPANCY: '/analytics/occupancy',
+    FINANCIAL: '/analytics/financial',
+    STUDENTS: '/analytics/students',
+    MAINTENANCE: '/analytics/maintenance',
+  },
 }

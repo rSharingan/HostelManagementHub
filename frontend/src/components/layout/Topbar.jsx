@@ -8,21 +8,21 @@ export const Topbar = ({ onMenuClick, dark, onThemeToggle }) => {
   const { user, logout } = useAuth()
 
   return (
-    <header className="h-16 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between px-6 sticky top-0 z-20">
+    <header className="h-16 bg-white dark:bg-dark-800/50 dark:backdrop-blur-xl border-b border-gray-200 dark:border-cyan-500/10 flex items-center justify-between px-6 sticky top-0 z-20">
       {/* Left: Menu & Search */}
       <div className="flex items-center gap-4">
         <button
           onClick={onMenuClick}
-          className="lg:hidden p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-400"
+          className="lg:hidden p-2 hover:bg-gray-100 dark:hover:bg-dark-700 rounded-lg text-gray-600 dark:text-dark-300 hover:text-gray-900 dark:hover:text-cyan-400 transition-colors"
         >
           <Menu size={20} />
         </button>
-        <div className="hidden md:flex items-center gap-2 bg-slate-100 dark:bg-slate-800 rounded-lg px-3 py-2">
-          <Search size={16} className="text-slate-400" />
+        <div className="hidden md:flex items-center gap-3 bg-gray-100 dark:bg-dark-700/50 border border-gray-300 dark:border-cyan-500/10 rounded-lg px-4 py-2">
+          <Search size={16} className="text-gray-400 dark:text-dark-400" />
           <input
             type="text"
             placeholder="Search..."
-            className="bg-transparent border-0 outline-none text-sm placeholder-slate-400 dark:text-slate-50 w-48"
+            className="bg-transparent border-0 outline-none text-sm placeholder-gray-400 dark:placeholder-dark-400 text-gray-900 dark:text-dark-50 w-48"
           />
         </div>
       </div>
@@ -31,26 +31,26 @@ export const Topbar = ({ onMenuClick, dark, onThemeToggle }) => {
       <div className="flex items-center gap-4">
         <button
           onClick={onThemeToggle}
-          className="p-2 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-lg text-slate-600 dark:text-slate-400 transition-all"
+          className="p-2 hover:bg-gray-100 dark:hover:bg-dark-700 rounded-lg text-gray-600 dark:text-dark-300 hover:text-gray-900 dark:hover:text-cyan-400 transition-all duration-300"
         >
           {dark ? <Sun size={20} /> : <Moon size={20} />}
         </button>
 
         <Dropdown
           trigger={
-            <div className="flex items-center gap-2 cursor-pointer hover:bg-slate-100 dark:hover:bg-slate-800 px-3 py-2 rounded-lg">
-              <div className="w-8 h-8 rounded-full bg-blue-500 text-white flex items-center justify-center text-sm font-semibold">
+            <div className="flex items-center gap-3 cursor-pointer hover:bg-gray-100 dark:hover:bg-dark-700/50 px-3 py-2 rounded-lg transition-colors duration-300">
+              <div className="w-8 h-8 rounded-full bg-gradient-to-r from-cyan-500 to-magenta-500 text-white dark:text-dark-900 flex items-center justify-center text-sm font-semibold">
                 {getInitials(user?.name)}
               </div>
               <div className="hidden sm:block">
-                <p className="text-sm font-medium text-slate-900 dark:text-slate-50">{user?.name}</p>
-                <p className="text-xs text-slate-500 dark:text-slate-400">{user?.role}</p>
+                <p className="text-sm font-medium text-gray-900 dark:text-dark-50">{user?.name}</p>
+                <p className="text-xs text-gray-500 dark:text-dark-400">{user?.role}</p>
               </div>
             </div>
           }
           align="right"
         >
-          <DropdownItem onClick={logout} className="text-red-600">
+          <DropdownItem onClick={logout} className="text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-500/10">
             Logout
           </DropdownItem>
         </Dropdown>

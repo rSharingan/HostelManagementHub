@@ -72,10 +72,10 @@ export const ProfilePage = () => {
             <div className="w-16 h-16 rounded-full bg-blue-500 text-white flex items-center justify-center text-2xl font-bold mx-auto mb-4">
               {getInitials(user?.name)}
             </div>
-            <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-50">
+            <h3 className="text-lg font-semibold text-gray-900 dark:text-dark-50">
               {user?.name}
             </h3>
-            <p className="text-sm text-slate-600 dark:text-slate-400 mb-2">
+            <p className="text-sm text-gray-600 dark:text-dark-400 mb-2">
               {user?.email}
             </p>
             <Badge className="inline-block">{user?.role}</Badge>
@@ -90,31 +90,31 @@ export const ProfilePage = () => {
           <CardContent className="space-y-4">
             <div className="grid grid-cols-2 gap-4">
               <div>
-                <p className="text-sm text-slate-600 dark:text-slate-400">
+                <p className="text-sm text-gray-600 dark:text-dark-400">
                   Name
                 </p>
-                <p className="font-medium text-slate-900 dark:text-slate-50">
+                <p className="font-medium text-gray-900 dark:text-dark-50">
                   {user?.name}
                 </p>
               </div>
               <div>
-                <p className="text-sm text-slate-600 dark:text-slate-400">
+                <p className="text-sm text-gray-600 dark:text-dark-400">
                   Email
                 </p>
-                <p className="font-medium text-slate-900 dark:text-slate-50">
+                <p className="font-medium text-gray-900 dark:text-dark-50">
                   {user?.email}
                 </p>
               </div>
               <div>
-                <p className="text-sm text-slate-600 dark:text-slate-400">
+                <p className="text-sm text-gray-600 dark:text-dark-400">
                   Role
                 </p>
-                <p className="font-medium text-slate-900 dark:text-slate-50">
+                <p className="font-medium text-gray-900 dark:text-dark-50">
                   {user?.role}
                 </p>
               </div>
               <div>
-                <p className="text-sm text-slate-600 dark:text-slate-400">
+                <p className="text-sm text-gray-600 dark:text-dark-400">
                   Status
                 </p>
                 <Badge variant="success">Active</Badge>

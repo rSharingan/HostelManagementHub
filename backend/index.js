@@ -24,7 +24,15 @@ function getConnectionString() {
   return `Driver={SQL Server};Server=${server};Database=${database};Trusted_Connection=yes;TrustServerCertificate=yes;`;
 }
 
-const connectionString = getConnectionString();
+// Get fallback connection string for Windows authentication
+function getFallbackConnectionString() {
+  const server = process.env.DB_SERVER || 'localhost';
+  const database = process.env.DB_NAME || 'HostelManagement';
+  return `Driver={SQL Server};Server=${server};Database=${database};Trusted_Connection=yes;TrustServerCertificate=yes;`;
+}
+
+let connectionString = getConnectionString();
+let fallbackConnectionString = getFallbackConnectionString();
 
 app.use(cors());
 app.use(express.json());
@@ -33,20 +41,40 @@ app.use(express.json());
 let conn;
 
 async function connectDB() {
+  // Try primary connection first
   try {
-    console.log('Connecting to MS SQL Server:', connectionString);
+    console.log('📡 Attempting primary connection with credentials...');
     conn = await new Promise((resolve, reject) => {
       sql.open(connectionString, (err, db) => {
         if (err) reject(err);
         else resolve(db);
       });
     });
-    console.log('✓ Connected to MS SQL Server successfully');
+    console.log('✅ Connected with primary credentials');
     return true;
-  } catch (err) {
-    console.error('✗ Database connection failed:', err.message);
-    console.error('Please check your database server and connection string.');
-    return false;
+  } catch (primaryErr) {
+    console.log('⚠️  Primary connection failed, attempting Windows authentication fallback...');
+    
+    // Try fallback with Windows authentication
+    try {
+      conn = await new Promise((resolve, reject) => {
+        sql.open(fallbackConnectionString, (err, db) => {
+          if (err) reject(err);
+          else resolve(db);
+        });
+      });
+      console.log('✅ Connected with Windows authentication (Trusted Connection)');
+      return true;
+    } catch (fallbackErr) {
+      console.error('❌ Both connection methods failed');
+      console.error('Primary error:', primaryErr.message);
+      console.error('Fallback error:', fallbackErr.message);
+      console.error('Please check:');
+      console.error('  1. SQL Server is running');
+      console.error('  2. Database "HostelManagement" exists');
+      console.error('  3. Either SQL credentials OR Windows auth is configured');
+      return false;
+    }
   }
 }
 
@@ -1296,6 +1324,33 @@ app.get('/api/fees/rent-status', async (req, res) => {
     const nextCycleToPay = paidCycles + 1;
     const nextPayDayThreshold = nextCycleToPay * 31;
 
+    // Calculate consecutive payment months based on rent cycle references
+    const rentCycleRows = await query(
+      "SELECT reference FROM Payments WHERE studentId = ? AND reference LIKE 'RENT_%_CYCLE_%' ORDER BY paymentDate DESC",
+      [student.id]
+    );
+
+    let consecutiveMonths = 0;
+    if (rentCycleRows && rentCycleRows.length > 0) {
+      const cycles = rentCycleRows
+        .map((row) => {
+          const match = row.reference.match(/CYCLE_(\d+)/);
+          return match ? Number(match[1]) : null;
+        })
+        .filter((cycle) => Number.isFinite(cycle))
+        .sort((a, b) => b - a);
+
+      let expectedCycle = cycles[0];
+      for (const cycle of cycles) {
+        if (cycle === expectedCycle) {
+          consecutiveMonths += 1;
+          expectedCycle -= 1;
+        } else {
+          break;
+        }
+      }
+    }
+
     return res.json({
       studentId: student.id,
       studentName: student.name,
@@ -1306,8 +1361,11 @@ app.get('/api/fees/rent-status', async (req, res) => {
       daysUsed,
       notifyRent: daysUsed >= 25,
       canPayNow: daysUsed >= nextPayDayThreshold,
+      daysUntilPaymentDue: Math.max(0, nextPayDayThreshold - daysUsed),
       pendingCycles,
       paidCycles,
+      monthsPaid: paidCycles,
+      consecutiveMonths,
       nextCycleToPay,
       status: pendingCycles > 0 ? 'DUE' : 'OK',
     });
@@ -2096,6 +2154,285 @@ app.delete('/api/allocations/:id', async (req, res) => {
     res.status(204).send();
   } catch (err) {
     console.error('Delete allocation error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Analytics Endpoints
+app.get('/api/analytics/occupancy', async (req, res) => {
+  try {
+    // Room occupancy by status
+    const occupancyQuery = `
+      SELECT 
+        status,
+        COUNT(*) as count,
+        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Rooms), 1) as percentage
+      FROM Rooms 
+      GROUP BY status
+    `;
+    const occupancyResult = await query(occupancyQuery);
+
+    // Room type distribution
+    const roomTypeQuery = `
+      SELECT 
+        type,
+        COUNT(*) as count,
+        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Rooms), 1) as percentage
+      FROM Rooms 
+      WHERE type IS NOT NULL
+      GROUP BY type
+    `;
+    const roomTypeResult = await query(roomTypeQuery);
+
+    // Floor-wise occupancy
+    const floorQuery = `
+      SELECT 
+        floor,
+        COUNT(*) as total_rooms,
+        SUM(CASE WHEN status = 'OCCUPIED' THEN 1 ELSE 0 END) as occupied_rooms,
+        ROUND((SUM(CASE WHEN status = 'OCCUPIED' THEN 1 ELSE 0 END) * 100.0) / COUNT(*), 1) as occupancy_rate
+      FROM Rooms 
+      GROUP BY floor
+      ORDER BY floor
+    `;
+    const floorResult = await query(floorQuery);
+
+    res.json({
+      occupancyByStatus: occupancyResult,
+      roomTypeDistribution: roomTypeResult,
+      floorOccupancy: floorResult,
+      totalRooms: occupancyResult.reduce((sum, item) => sum + item.count, 0),
+      occupiedRooms: occupancyResult.find(item => item.status === 'OCCUPIED')?.count || 0
+    });
+  } catch (err) {
+    console.error('Occupancy analytics error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/analytics/financial', async (req, res) => {
+  try {
+    // Monthly revenue (last 12 months)
+    const revenueQuery = `
+      SELECT
+        YEAR(paymentDate) as year,
+        MONTH(paymentDate) as month,
+        SUM(amount) as total_revenue,
+        COUNT(*) as payment_count
+      FROM Payments
+      WHERE paymentDate >= DATEADD(MONTH, -12, GETDATE())
+      GROUP BY YEAR(paymentDate), MONTH(paymentDate)
+      ORDER BY year DESC, month DESC
+    `;
+    const revenueResult = await query(revenueQuery);
+
+    // Outstanding dues by student (using Invoices table)
+    const duesQuery = `
+      SELECT
+        s.name,
+        s.email,
+        a.roomId,
+        COUNT(*) as pending_invoices,
+        SUM(CASE WHEN i.status = 'PENDING' THEN i.amount ELSE 0 END) as total_dues
+      FROM Invoices i
+      JOIN Students s ON i.studentId = s.id
+      LEFT JOIN Allocations a ON s.id = a.studentId AND a.status = 'ACTIVE'
+      WHERE i.status = 'PENDING'
+      GROUP BY s.id, s.name, s.email, a.roomId
+      HAVING SUM(CASE WHEN i.status = 'PENDING' THEN i.amount ELSE 0 END) > 0
+      ORDER BY total_dues DESC
+    `;
+    const duesResult = await query(duesQuery);
+
+    // Payment method distribution (using 'method' column)
+    const paymentMethodQuery = `
+      SELECT
+        method as paymentMethod,
+        COUNT(*) as count,
+        SUM(amount) as total_amount,
+        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Payments), 1) as percentage
+      FROM Payments
+      GROUP BY method
+    `;
+    const paymentMethodResult = await query(paymentMethodQuery);
+
+    // Revenue by room type
+    const revenueByRoomQuery = `
+      SELECT
+        r.type,
+        COUNT(DISTINCT p.id) as payment_count,
+        SUM(p.amount) as total_revenue
+      FROM Payments p
+      JOIN Students s ON p.studentId = s.id
+      LEFT JOIN Allocations a ON s.id = a.studentId AND a.status = 'ACTIVE'
+      LEFT JOIN Rooms r ON a.roomId = r.id
+      GROUP BY r.type
+    `;
+    const revenueByRoomResult = await query(revenueByRoomQuery);
+
+    res.json({
+      monthlyRevenue: revenueResult,
+      outstandingDues: duesResult,
+      paymentMethods: paymentMethodResult,
+      revenueByRoomType: revenueByRoomResult,
+      totalRevenue: revenueResult.reduce((sum, item) => sum + item.total_revenue, 0),
+      totalOutstanding: duesResult.reduce((sum, item) => sum + item.total_dues, 0)
+    });
+  } catch (err) {
+    console.error('Financial analytics error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/analytics/students', async (req, res) => {
+  try {
+    // Department-wise distribution (using department instead of course)
+    const departmentQuery = `
+      SELECT
+        department,
+        COUNT(*) as count,
+        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Students), 1) as percentage
+      FROM Students
+      WHERE department IS NOT NULL AND department != ''
+      GROUP BY department
+      ORDER BY count DESC
+    `;
+    const departmentResult = await query(departmentQuery);
+
+    // Year of study distribution
+    const yearQuery = `
+      SELECT
+        yearOfStudy,
+        COUNT(*) as count,
+        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Students), 1) as percentage
+      FROM Students
+      WHERE yearOfStudy IS NOT NULL
+      GROUP BY yearOfStudy
+      ORDER BY yearOfStudy
+    `;
+    const yearResult = await query(yearQuery);
+
+    // Status distribution
+    const statusQuery = `
+      SELECT
+        status,
+        COUNT(*) as count,
+        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Students), 1) as percentage
+      FROM Students
+      GROUP BY status
+    `;
+    const statusResult = await query(statusQuery);
+
+    // Students by registration year (derived from registration number if available)
+    const registrationYearQuery = `
+      SELECT
+        CASE
+          WHEN LEN(registrationNumber) >= 4 AND ISNUMERIC(LEFT(registrationNumber, 4)) = 1
+          THEN LEFT(registrationNumber, 4)
+          ELSE 'Unknown'
+        END as registration_year,
+        COUNT(*) as count
+      FROM Students
+      WHERE registrationNumber IS NOT NULL AND registrationNumber != ''
+      GROUP BY
+        CASE
+          WHEN LEN(registrationNumber) >= 4 AND ISNUMERIC(LEFT(registrationNumber, 4)) = 1
+          THEN LEFT(registrationNumber, 4)
+          ELSE 'Unknown'
+        END
+      ORDER BY registration_year DESC
+    `;
+    const registrationYearResult = await query(registrationYearQuery);
+
+    res.json({
+      departmentDistribution: departmentResult,
+      yearOfStudyDistribution: yearResult,
+      statusDistribution: statusResult,
+      registrationYearDistribution: registrationYearResult,
+      totalStudents: departmentResult.reduce((sum, item) => sum + item.count, 0) || yearResult.reduce((sum, item) => sum + item.count, 0) || 0
+    });
+  } catch (err) {
+    console.error('Student analytics error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/analytics/maintenance', async (req, res) => {
+  try {
+    // Priority distribution
+    const priorityQuery = `
+      SELECT
+        priority,
+        COUNT(*) as count,
+        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Maintenance), 1) as percentage
+      FROM Maintenance
+      GROUP BY priority
+      ORDER BY count DESC
+    `;
+    const priorityResult = await query(priorityQuery);
+
+    // Status distribution
+    const statusQuery = `
+      SELECT
+        status,
+        COUNT(*) as count,
+        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Maintenance), 1) as percentage
+      FROM Maintenance
+      GROUP BY status
+    `;
+    const statusResult = await query(statusQuery);
+
+    // Average resolution time by priority
+    const resolutionTimeQuery = `
+      SELECT
+        priority,
+        AVG(DATEDIFF(HOUR, reportedDate, resolvedDate)) as avg_resolution_hours,
+        COUNT(*) as total_issues
+      FROM Maintenance
+      WHERE status = 'CLOSED' AND resolvedDate IS NOT NULL
+      GROUP BY priority
+      ORDER BY avg_resolution_hours DESC
+    `;
+    const resolutionTimeResult = await query(resolutionTimeQuery);
+
+    // Monthly maintenance requests
+    const monthlyQuery = `
+      SELECT
+        YEAR(reportedDate) as year,
+        MONTH(reportedDate) as month,
+        COUNT(*) as request_count
+      FROM Maintenance
+      WHERE reportedDate >= DATEADD(MONTH, -12, GETDATE())
+      GROUP BY YEAR(reportedDate), MONTH(reportedDate)
+      ORDER BY year DESC, month DESC
+    `;
+    const monthlyResult = await query(monthlyQuery);
+
+    // Issues by room (top problematic rooms)
+    const roomIssuesQuery = `
+      SELECT
+        r.roomNumber,
+        COUNT(*) as issue_count,
+        r.type as room_type
+      FROM Maintenance m
+      LEFT JOIN Rooms r ON m.roomId = r.id
+      WHERE m.roomId IS NOT NULL
+      GROUP BY r.id, r.roomNumber, r.type
+      ORDER BY issue_count DESC
+    `;
+    const roomIssuesResult = await query(roomIssuesQuery);
+
+    res.json({
+      priorityDistribution: priorityResult,
+      statusDistribution: statusResult,
+      resolutionTimeByPriority: resolutionTimeResult,
+      monthlyRequests: monthlyResult,
+      roomIssues: roomIssuesResult,
+      totalRequests: priorityResult.reduce((sum, item) => sum + item.count, 0),
+      resolvedRequests: statusResult.find(item => item.status === 'CLOSED')?.count || 0
+    });
+  } catch (err) {
+    console.error('Maintenance analytics error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });

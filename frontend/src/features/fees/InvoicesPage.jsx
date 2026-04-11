@@ -146,7 +146,7 @@ export const InvoicesPage = () => {
       <Card className="mt-6">
         <CardContent className="p-8 text-center">
           {isLoading ? (
-            <p className="text-slate-600 dark:text-slate-400">Loading...</p>
+            <p className="text-gray-600 dark:text-dark-400">Loading...</p>
           ) : (
             <DataTable
               columns={columns}

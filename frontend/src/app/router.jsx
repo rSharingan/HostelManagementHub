@@ -213,7 +213,7 @@ export const router = createBrowserRouter([
       <RequireAuth>
         <AppLayout>
           <div className="text-center py-12">
-            <h1 className="text-2xl font-bold text-slate-900 dark:text-slate-50">
+            <h1 className="text-2xl font-bold text-gray-900 dark:text-dark-50">
               Page not found
             </h1>
           </div>

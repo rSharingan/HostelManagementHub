@@ -9,52 +9,64 @@ export const StatCard = ({
   trend,
   trendUp,
   className,
-  color = 'blue',
+  color = 'cyan',
 }) => {
   const colorVariants = {
-    blue: {
-      bg: 'bg-gradient-to-br from-blue-500 to-indigo-600',
-      iconBg: 'bg-blue-100 dark:bg-blue-900/30',
-      iconColor: 'text-blue-600 dark:text-blue-400',
-      trendColor: 'text-blue-600 dark:text-blue-400',
+    cyan: {
+      bg: 'bg-gradient-to-br from-cyan-500 to-blue-600',
+      iconBg: 'bg-cyan-500/10 border border-cyan-500/30',
+      iconColor: 'text-cyan-400',
+      trendColor: 'text-cyan-400',
+      glow: 'animate-glow-cyan',
+    },
+    magenta: {
+      bg: 'bg-gradient-to-br from-magenta-500 to-pink-600',
+      iconBg: 'bg-magenta-500/10 border border-magenta-500/30',
+      iconColor: 'text-magenta-400',
+      trendColor: 'text-magenta-400',
+      glow: 'animate-glow-magenta',
     },
     green: {
       bg: 'bg-gradient-to-br from-green-500 to-emerald-600',
-      iconBg: 'bg-green-100 dark:bg-green-900/30',
-      iconColor: 'text-green-600 dark:text-green-400',
-      trendColor: 'text-green-600 dark:text-green-400',
+      iconBg: 'bg-green-500/10 border border-green-500/30',
+      iconColor: 'text-green-400',
+      trendColor: 'text-green-400',
+      glow: 'animate-glow',
     },
     purple: {
-      bg: 'bg-gradient-to-br from-purple-500 to-violet-600',
-      iconBg: 'bg-purple-100 dark:bg-purple-900/30',
-      iconColor: 'text-purple-600 dark:text-purple-400',
-      trendColor: 'text-purple-600 dark:text-purple-400',
+      bg: 'bg-gradient-to-br from-violet-500 to-purple-600',
+      iconBg: 'bg-violet-500/10 border border-violet-500/30',
+      iconColor: 'text-violet-400',
+      trendColor: 'text-violet-400',
+      glow: 'animate-pulse-scale',
     },
     orange: {
       bg: 'bg-gradient-to-br from-orange-500 to-amber-600',
-      iconBg: 'bg-orange-100 dark:bg-orange-900/30',
-      iconColor: 'text-orange-600 dark:text-orange-400',
-      trendColor: 'text-orange-600 dark:text-orange-400',
+      iconBg: 'bg-orange-500/10 border border-orange-500/30',
+      iconColor: 'text-orange-400',
+      trendColor: 'text-orange-400',
+      glow: 'animate-float',
     },
     red: {
       bg: 'bg-gradient-to-br from-red-500 to-rose-600',
-      iconBg: 'bg-red-100 dark:bg-red-900/30',
-      iconColor: 'text-red-600 dark:text-red-400',
-      trendColor: 'text-red-600 dark:text-red-400',
+      iconBg: 'bg-red-500/10 border border-red-500/30',
+      iconColor: 'text-red-400',
+      trendColor: 'text-red-400',
+      glow: 'animate-glow',
     },
   }
 
-  const colors = colorVariants[color] || colorVariants.blue
+  const colors = colorVariants[color] || colorVariants.cyan
 
   return (
-    <Card className={cn('overflow-hidden hover-lift animate-fade-in-up', className)} variant="gradient">
+    <Card className={cn('overflow-hidden animate-fade-in-up', className)} variant="stat">
       <CardContent className="p-6">
         <div className="flex items-center justify-between">
           <div className="flex-1">
-            <p className="text-sm font-medium text-slate-600 dark:text-slate-400 mb-2 uppercase tracking-wide">
+            <p className="text-sm font-medium text-gray-600 dark:text-dark-400 mb-2 uppercase tracking-wide">
               {label}
             </p>
-            <p className="text-3xl font-bold bg-gradient-to-r from-slate-900 to-slate-700 dark:from-slate-100 dark:to-slate-300 bg-clip-text text-transparent mb-1">
+            <p className="text-3xl font-bold text-gray-900 dark:text-cyan-400 mb-2">
               {value}
             </p>
             {trend && (
@@ -73,7 +85,7 @@ export const StatCard = ({
             )}
           </div>
           {Icon && (
-            <div className={cn('w-14 h-14 rounded-2xl flex items-center justify-center shadow-lg animate-pulse-glow', colors.iconBg)}>
+            <div className={cn('w-14 h-14 rounded-2xl flex items-center justify-center', colors.iconBg, colors.glow)}>
               <Icon size={28} className={colors.iconColor} />
             </div>
           )}
