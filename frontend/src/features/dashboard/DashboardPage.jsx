@@ -4,6 +4,7 @@ import { Users, Home, DollarSign, AlertCircle, Wrench, CheckCircle } from 'lucid
 import { useAuth } from '../auth/hooks'
 import { PageHeader } from '../../components/common/PageHeader'
 import { CountdownTimer } from '../../components/common/CountdownTimer'
+import { AnalyticsDashboard } from '../../components/analytics/AnalyticsDashboard'
 import { StatCard } from '../../components/common/StatCard'
 import { Button } from '../../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
@@ -236,6 +237,11 @@ export const DashboardPage = () => {
             </CardContent>
           </Card>
         </div>
+      </div>
+
+      {/* Analytics Dashboard Section */}
+      <div className="mt-8">
+        <AnalyticsDashboard />
       </div>
     </div>
   )
