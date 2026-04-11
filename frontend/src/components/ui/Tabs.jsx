@@ -16,7 +16,7 @@ export const TabsList = ({ children, className, ...props }) => {
   return (
     <div
       className={cn(
-        'flex gap-1 border-b border-slate-200 dark:border-slate-800',
+        'flex gap-2 border-b border-gray-200 dark:border-cyan-500/10',
         className,
       )}
       {...props}
@@ -31,10 +31,10 @@ export const TabsTrigger = ({ value, active, onClick, children, ...props }) => {
     <button
       onClick={onClick}
       className={cn(
-        'px-4 py-2 text-sm font-medium border-b-2 transition-all',
+        'px-4 py-3 text-sm font-medium border-b-2 transition-all duration-300',
         active
-          ? 'border-blue-600 text-blue-600 dark:text-blue-400'
-          : 'border-transparent text-slate-600 dark:text-slate-400 hover:text-slate-900 dark:hover:text-slate-200',
+          ? 'border-cyan-500 text-cyan-600 dark:text-cyan-400'
+          : 'border-transparent text-gray-600 dark:text-dark-400 hover:text-gray-900 dark:hover:text-cyan-400 hover:border-gray-300 dark:hover:border-cyan-500/50',
       )}
       {...props}
     >
@@ -45,5 +45,5 @@ export const TabsTrigger = ({ value, active, onClick, children, ...props }) => {
 
 export const TabsContent = ({ value, active, children, ...props }) => {
   if (!active) return null
-  return <div {...props}>{children}</div>
+  return <div className="animate-fade-in-up" {...props}>{children}</div>
 }

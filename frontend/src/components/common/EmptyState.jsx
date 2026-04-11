@@ -12,18 +12,18 @@ export const EmptyState = ({
   return (
     <div
       className={cn(
-        'flex flex-col items-center justify-center py-12 px-4 text-center',
+        'flex flex-col items-center justify-center py-12 px-4 text-center animate-fade-in-up',
         className,
       )}
     >
-      <div className="w-12 h-12 bg-slate-100 dark:bg-slate-800 rounded-full flex items-center justify-center mb-4">
-        <Icon size={24} className="text-slate-600 dark:text-slate-400" />
+      <div className="w-14 h-14 bg-gradient-to-br from-cyan-100 dark:from-cyan-500/20 to-gray-100 dark:to-magenta-500/20 border border-cyan-300 dark:border-cyan-500/30 rounded-full flex items-center justify-center mb-4">
+        <Icon size={28} className="text-cyan-600 dark:text-cyan-400" />
       </div>
-      <h3 className="text-lg font-semibold text-slate-900 dark:text-slate-50 mb-2">
+      <h3 className="text-lg font-semibold text-gray-900 dark:text-cyan-400 mb-2">
         {title}
       </h3>
       {description && (
-        <p className="text-slate-600 dark:text-slate-400 mb-4 max-w-sm">
+        <p className="text-gray-600 dark:text-dark-400 mb-6 max-w-sm">
           {description}
         </p>
       )}

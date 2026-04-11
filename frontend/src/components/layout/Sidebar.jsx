@@ -45,21 +45,22 @@ export const Sidebar = ({ open, onClose, dark, onThemeToggle }) => {
       )}
       <aside
         className={cn(
-          'fixed left-0 top-0 h-screen w-64 bg-white dark:bg-slate-900 border-r border-slate-200 dark:border-slate-800',
-          'transform transition-transform duration-300 z-40 lg:relative lg:translate-x-0',
+          'fixed left-0 top-0 h-screen w-64 border-r border-gray-200 dark:border-cyan-500/10',
+          'transform transition-all duration-300 z-40 lg:relative lg:translate-x-0',
+          'bg-white dark:bg-dark-800/80 dark:backdrop-blur-xl',
           open ? 'translate-x-0' : '-translate-x-full lg:translate-x-0',
         )}
       >
         {/* Header */}
-        <div className="p-6 border-b border-slate-200 dark:border-slate-800 flex items-center justify-between">
-          <h1 className="text-xl font-bold text-slate-900 dark:text-slate-50">HMS</h1>
-          <button onClick={onClose} className="lg:hidden text-slate-600 hover:text-slate-900 dark:hover:text-slate-50">
+        <div className="p-6 border-b border-gray-200 dark:border-cyan-500/10 flex items-center justify-between bg-gradient-to-r from-gray-50 dark:from-cyan-500/5 to-transparent">
+          <h1 className="text-2xl font-bold text-gray-900 dark:text-cyan-400">HMS</h1>
+          <button onClick={onClose} className="lg:hidden text-gray-600 dark:text-dark-300 hover:text-gray-900 dark:hover:text-cyan-400 transition-colors">
             <X size={20} />
           </button>
         </div>
 
         {/* Navigation */}
-        <nav className="px-4 py-6 space-y-1 overflow-y-auto">
+        <nav className="px-4 py-6 space-y-2 overflow-y-auto">
           {visibleItems.map((item) => {
             const Icon = item.icon
             const active = isActive(item.href)
@@ -69,10 +70,10 @@ export const Sidebar = ({ open, onClose, dark, onThemeToggle }) => {
                 to={item.href}
                 onClick={onClose}
                 className={cn(
-                  'flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium transition-all',
+                  'flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium transition-all duration-300',
                   active
-                    ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400'
-                    : 'text-slate-700 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800',
+                    ? 'bg-cyan-100 dark:bg-gradient-to-r dark:from-cyan-500/20 dark:to-transparent text-cyan-700 dark:text-cyan-400 border-l-2 border-cyan-600 dark:border-cyan-500'
+                    : 'text-gray-700 dark:text-dark-300 hover:text-gray-900 dark:hover:text-cyan-400 hover:bg-gray-100 dark:hover:bg-dark-700/50',
                 )}
               >
                 <Icon size={18} />
@@ -83,10 +84,10 @@ export const Sidebar = ({ open, onClose, dark, onThemeToggle }) => {
         </nav>
 
         {/* Footer */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-slate-200 dark:border-slate-800 space-y-3">
+        <div className="absolute bottom-0 left-0 right-0 p-4 border-t border-gray-200 dark:border-cyan-500/10 space-y-3 bg-gradient-to-t from-gray-50 dark:from-dark-900 to-transparent">
           <button
             onClick={logout}
-            className="w-full flex items-center gap-3 px-4 py-2.5 rounded-lg text-sm font-medium text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 transition-all"
+            className="w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-medium text-red-600 hover:bg-red-50 dark:text-red-400 dark:hover:bg-red-500/10 dark:hover:border dark:hover:border-red-500/20 transition-all duration-300"
           >
             <LogOut size={18} />
             <span>Logout</span>

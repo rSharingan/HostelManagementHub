@@ -3,6 +3,7 @@ import { useState, useEffect } from 'react'
 import { Users, Home, DollarSign, AlertCircle, Wrench, CheckCircle } from 'lucide-react'
 import { useAuth } from '../auth/hooks'
 import { PageHeader } from '../../components/common/PageHeader'
+import { CountdownTimer } from '../../components/common/CountdownTimer'
 import { StatCard } from '../../components/common/StatCard'
 import { Button } from '../../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
@@ -180,14 +181,14 @@ export const DashboardPage = () => {
                 const complaintSummary = complaint.description || complaint.title || 'Complaint'
 
                 return (
-                  <div key={complaint.id} className="flex justify-between items-center py-3 border-b border-slate-200/50 dark:border-slate-700/50 last:border-b-0">
+                  <div key={complaint.id} className="flex justify-between items-center py-3 border-b border-gray-200/50 dark:border-dark-700/50 last:border-b-0">
                     <div>
-                      <p className="font-semibold text-slate-900 dark:text-slate-100">{complaintSummary}</p>
-                      <p className="text-sm text-slate-600 dark:text-slate-400">
+                      <p className="font-semibold text-gray-900 dark:text-dark-100">{complaintSummary}</p>
+                      <p className="text-sm text-gray-600 dark:text-dark-400">
                         By: {complaint.studentName || 'Unknown student'}
                         {complaint.registrationNumber ? ` · ${complaint.registrationNumber}` : ''}
                       </p>
-                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-1">
+                      <p className="text-xs text-gray-500 dark:text-dark-400 mt-1">
                         {complaint.roomNumber ? `Room ${complaint.roomNumber}` : 'Room not assigned'}
                         {complaint.priority ? ` · ${complaint.priority}` : ''}
                       </p>
@@ -203,7 +204,7 @@ export const DashboardPage = () => {
                 )
               })}
               {complaints.length === 0 && (
-                <div className="text-center py-8 text-slate-500 dark:text-slate-400">
+                <div className="text-center py-8 text-gray-500 dark:text-dark-400">
                   <AlertCircle className="mx-auto mb-2" size={32} />
                   <p>No complaints yet</p>
                 </div>
@@ -220,15 +221,15 @@ export const DashboardPage = () => {
             <CardContent>
               <div className="space-y-4">
                 <div className="flex justify-between items-center p-4 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-900/20 dark:to-indigo-900/20 rounded-xl">
-                  <span className="font-semibold text-slate-700 dark:text-slate-300">Occupied</span>
+                  <span className="font-semibold text-gray-700 dark:text-dark-300">Occupied</span>
                   <span className="text-2xl font-bold text-blue-600 dark:text-blue-400">{rooms.filter(r => r.occupied).length}</span>
                 </div>
                 <div className="flex justify-between items-center p-4 bg-gradient-to-r from-green-50 to-emerald-50 dark:from-green-900/20 dark:to-emerald-900/20 rounded-xl">
-                  <span className="font-semibold text-slate-700 dark:text-slate-300">Vacant</span>
+                  <span className="font-semibold text-gray-700 dark:text-dark-300">Vacant</span>
                   <span className="text-2xl font-bold text-green-600 dark:text-green-400">{rooms.filter(r => !r.occupied).length}</span>
                 </div>
                 <div className="flex justify-between items-center p-4 bg-gradient-to-r from-purple-50 to-violet-50 dark:from-purple-900/20 dark:to-violet-900/20 rounded-xl">
-                  <span className="font-semibold text-slate-700 dark:text-slate-300">Total Capacity</span>
+                  <span className="font-semibold text-gray-700 dark:text-dark-300">Total Capacity</span>
                   <span className="text-2xl font-bold text-purple-600 dark:text-purple-400">{rooms.length * 2}</span>
                 </div>
               </div>
@@ -326,7 +327,7 @@ export const DashboardPage = () => {
               <div key={student.id} className="flex justify-between items-center py-2 border-b">
                 <div>
                   <p className="font-medium">{student.name}</p>
-                  <p className="text-sm text-slate-600">{student.registrationNumber}</p>
+                  <p className="text-sm text-gray-600 dark:text-dark-400">{student.registrationNumber}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   <span className={`px-2 py-1 rounded text-xs ${
@@ -351,7 +352,7 @@ export const DashboardPage = () => {
               <div key={room.id} className="flex justify-between items-center py-2 border-b">
                 <div>
                   <p className="font-medium">Room {room.roomNumber}</p>
-                  <p className="text-sm text-slate-600">Block {room.block}</p>
+                  <p className="text-sm text-gray-600 dark:text-dark-400">Block {room.block}</p>
                 </div>
                 <span className="text-green-600">Available</span>
               </div>
@@ -368,7 +369,7 @@ export const DashboardPage = () => {
               <div key={student.id} className="flex justify-between items-center py-2 border-b">
                 <div>
                   <p className="font-medium">{student.name}</p>
-                  <p className="text-sm text-slate-600">{student.registrationNumber}</p>
+                  <p className="text-sm text-gray-600 dark:text-dark-400">{student.registrationNumber}</p>
                 </div>
                 <span className="text-red-600">Unpaid</span>
               </div>
@@ -415,11 +416,11 @@ export const DashboardPage = () => {
               const complaintSummary = complaint.description || complaint.title || 'Complaint'
 
               return (
-                <div key={complaint.id} className="border-b border-slate-200 pb-4 mb-4 last:border-b-0 last:pb-0 last:mb-0">
+                <div key={complaint.id} className="border-b border-gray-200 pb-4 mb-4 last:border-b-0 last:pb-0 last:mb-0">
                   <div className="flex justify-between items-start mb-3">
                     <div className="flex-1">
-                      <h3 className="font-semibold text-lg text-slate-900 dark:text-slate-100">{complaintSummary}</h3>
-                      <p className="text-slate-600 dark:text-slate-300 mt-1">{complaint.description || complaint.title || 'No description provided'}</p>
+                      <h3 className="font-semibold text-lg text-gray-900 dark:text-dark-100">{complaintSummary}</h3>
+                      <p className="text-gray-600 dark:text-dark-300 mt-1">{complaint.description || complaint.title || 'No description provided'}</p>
                     </div>
                     <div className="flex items-center gap-2 ml-4">
                       <span className={`px-3 py-1 rounded-full text-sm font-medium ${
@@ -430,7 +431,7 @@ export const DashboardPage = () => {
                         {complaint.status}
                       </span>
                       {complaint.priority && (
-                        <span className="px-3 py-1 rounded-full text-sm font-medium bg-slate-100 text-slate-700 dark:bg-slate-700 dark:text-slate-200">
+                        <span className="px-3 py-1 rounded-full text-sm font-medium bg-gray-100 text-gray-700 dark:bg-dark-700 dark:text-dark-200">
                           {complaint.priority}
                         </span>
                       )}
@@ -442,9 +443,9 @@ export const DashboardPage = () => {
                     </div>
                   </div>
 
-                  <div className="bg-slate-50 dark:bg-slate-800 rounded-lg p-3">
-                    <h4 className="font-medium text-slate-900 dark:text-slate-100 mb-2">Student Details:</h4>
-                    <div className="grid grid-cols-2 gap-4 text-sm text-slate-700 dark:text-slate-200">
+                  <div className="bg-gray-50 dark:bg-dark-800 rounded-lg p-3">
+                    <h4 className="font-medium text-gray-900 dark:text-dark-100 mb-2">Student Details:</h4>
+                    <div className="grid grid-cols-2 gap-4 text-sm text-gray-700 dark:text-dark-200">
                       <div>
                         <span className="font-medium">Name:</span> {complaint.studentName || 'N/A'}
                       </div>
@@ -505,7 +506,7 @@ export const DashboardPage = () => {
               <div key={room.id} className="flex justify-between items-center py-2 border-b">
                 <div>
                   <p className="font-medium">Room {room.roomNumber}</p>
-                  <p className="text-sm text-slate-600">Block {room.block} - ${room.rentalCost}/month</p>
+                  <p className="text-sm text-gray-600 dark:text-dark-400">Block {room.block} - ${room.rentalCost}/month</p>
                 </div>
                 <Button size="sm">Apply</Button>
               </div>
@@ -525,6 +526,27 @@ export const DashboardPage = () => {
               <p className="text-lg font-medium">
                 {rentStatus?.status === 'DUE' ? 'Rent Due' : 'Rent Up To Date'}
               </p>
+              <p className="text-sm text-gray-700 dark:text-dark-300 mt-2">
+                Months paid: {rentStatus?.monthsPaid || 0}
+              </p>
+              {rentStatus?.consecutiveMonths > 0 && (
+                <p className="text-sm text-green-600 dark:text-green-400 mt-1">
+                  🎯 {rentStatus.consecutiveMonths} consecutive payment month{rentStatus.consecutiveMonths !== 1 ? 's' : ''}
+                </p>
+              )}
+              <p className="text-sm text-cyan-600 dark:text-cyan-300 mt-1">
+                Next cycle: {rentStatus?.nextCycleToPay}
+              </p>
+
+              <hr className="my-4 border-gray-300 dark:border-dark-700" />
+
+              <div className="py-4">
+                <p className="text-sm text-gray-600 dark:text-dark-300 mb-3">Time until next payment due:</p>
+                <CountdownTimer daysUntil={rentStatus?.daysUntilPaymentDue || 0} />
+              </div>
+
+              <hr className="my-4 border-gray-300 dark:border-dark-700" />
+
               {rentStatus?.notifyRent && (
                 <p className="mt-2 text-sm text-amber-600">
                   {rentStatus?.canPayNow
@@ -560,7 +582,7 @@ export const DashboardPage = () => {
               />
               <select
                 name="priority"
-                className="w-full px-3 py-2 border rounded bg-white dark:bg-slate-900"
+                className="w-full px-3 py-2 border rounded bg-white dark:bg-dark-900"
                 defaultValue="MEDIUM"
               >
                 <option value="LOW">LOW</option>

@@ -10,17 +10,17 @@ export const Button = ({
   ...props
 }) => {
   const baseClasses =
-    'font-semibold rounded-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 transform hover:scale-105 active:scale-95 shadow-lg hover:shadow-xl'
+    'font-semibold rounded-xl transition-all duration-300 disabled:opacity-50 disabled:cursor-not-allowed inline-flex items-center justify-center gap-2 transform hover:scale-105 active:scale-95'
 
   const variants = {
-    primary: 'bg-gradient-to-r from-blue-500 to-indigo-600 hover:from-blue-600 hover:to-indigo-700 text-white hover:shadow-blue-500/25',
-    secondary: 'bg-gradient-to-r from-slate-100 to-slate-200 hover:from-slate-200 hover:to-slate-300 dark:from-slate-700 dark:to-slate-600 dark:hover:from-slate-600 dark:hover:to-slate-500 text-slate-900 dark:text-slate-100 hover:shadow-slate-500/25',
-    success: 'bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white hover:shadow-green-500/25',
-    warning: 'bg-gradient-to-r from-amber-500 to-orange-600 hover:from-amber-600 hover:to-orange-700 text-white hover:shadow-amber-500/25',
-    danger: 'bg-gradient-to-r from-red-500 to-rose-600 hover:from-red-600 hover:to-rose-700 text-white hover:shadow-red-500/25',
-    outline: 'border-2 border-blue-500 text-blue-600 hover:bg-blue-50 dark:border-blue-400 dark:text-blue-400 dark:hover:bg-blue-900/20 hover:shadow-blue-500/25',
-    ghost: 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800 hover:shadow-slate-500/25',
-    glass: 'glass text-slate-800 dark:text-slate-200 hover:bg-white/20 dark:hover:bg-black/20 backdrop-blur-md border border-white/20 dark:border-white/10',
+    primary: 'bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-white dark:text-dark-900 hover:shadow-lg dark:hover:shadow-glow-cyan',
+    secondary: 'bg-gray-100 hover:bg-gray-200 text-gray-900 border border-gray-300 dark:bg-dark-700 dark:hover:bg-dark-600 dark:text-dark-50 dark:border-dark-600 dark:hover:border-cyan-500/50',
+    success: 'bg-gradient-to-r from-green-600 to-emerald-600 hover:from-green-500 hover:to-emerald-500 text-white hover:shadow-green-500/25 shadow-lg',
+    warning: 'bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white hover:shadow-amber-500/25 shadow-lg',
+    danger: 'bg-gradient-to-r from-red-600 to-pink-600 hover:from-red-500 hover:to-pink-500 text-white hover:shadow-red-500/25 shadow-lg',
+    outline: 'border-2 border-cyan-500 text-cyan-600 dark:text-cyan-400 hover:bg-cyan-50 dark:hover:bg-cyan-500/10 hover:shadow-glow-cyan',
+    ghost: 'text-gray-700 hover:bg-gray-100 dark:text-dark-100 dark:hover:bg-dark-800 dark:hover:text-cyan-400',
+    magenta: 'bg-gradient-to-r from-magenta-500 to-pink-600 hover:from-magenta-600 hover:to-pink-500 text-white dark:text-dark-900 hover:shadow-lg dark:hover:shadow-glow-magenta',
   }
 
   const sizes = {

@@ -132,9 +132,9 @@ export const StaffPage = () => {
               required
             />
             <div>
-              <label className="block text-sm font-medium text-slate-700 dark:text-slate-300 mb-1">Role</label>
+              <label className="block text-sm font-medium text-gray-700 dark:text-dark-300 mb-1">Role</label>
               <select
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-800"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-dark-600 rounded-lg bg-white dark:bg-dark-800 text-gray-900 dark:text-dark-50"
                 value={form.role}
                 onChange={(e) => setForm((prev) => ({ ...prev, role: e.target.value }))}
               >
@@ -162,7 +162,7 @@ export const StaffPage = () => {
       <Card className="mt-6">
         <CardContent className="p-8 text-center">
           {isLoading ? (
-            <p className="text-slate-600 dark:text-slate-400">Loading...</p>
+            <p className="text-gray-600 dark:text-dark-400">Loading...</p>
           ) : (
             <DataTable
               columns={columns}

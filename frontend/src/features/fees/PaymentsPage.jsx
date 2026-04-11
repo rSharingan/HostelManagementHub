@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 import { PageHeader } from '../../components/common/PageHeader'
 import { Card, CardContent, CardHeader } from '../../components/ui/Card'
 import { DataTable } from '../../components/common/DataTable'
+import { CountdownTimer } from '../../components/common/CountdownTimer'
 import { useCreatePayment, usePayments, usePayRent, useRentStatus } from './hooks'
 import Input from '../../components/ui/Input'
 import { Button } from '../../components/ui/Button'
@@ -126,7 +127,7 @@ export const PaymentsPage = () => {
                 required
               />
               <select
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-800"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-dark-600 rounded-lg bg-white dark:bg-dark-800 text-gray-900 dark:text-dark-50"
                 value={form.method}
                 onChange={(e) => setForm((prev) => ({ ...prev, method: e.target.value }))}
               >
@@ -153,23 +154,35 @@ export const PaymentsPage = () => {
           </CardHeader>
           <CardContent>
             {!rentStatus ? (
-              <p className="text-slate-600 dark:text-slate-400">Loading rent status...</p>
+              <p className="text-gray-600 dark:text-dark-400">Loading rent status...</p>
             ) : (
-              <div className="space-y-2">
-                <p className="text-sm text-slate-700 dark:text-slate-300">Days used: {rentStatus.daysUsed}</p>
-                <p className="text-sm text-slate-700 dark:text-slate-300">Pending cycles: {rentStatus.pendingCycles}</p>
-                <p className="text-sm text-slate-700 dark:text-slate-300">Monthly rent: {formatCurrency(rentStatus.monthlyRent || 0)}</p>
-                {rentStatus.notifyRent && (
-                  <p className="text-sm text-amber-600">
-                    {rentStatus.canPayNow ? 'Payment window open. Please clear dues.' : 'Reminder: payment starts on day 31.'}
-                  </p>
-                )}
-                <Button
-                  onClick={handleStudentRentPayment}
-                  disabled={!rentStatus.canPayNow || payRent.isPending}
-                >
-                  {payRent.isPending ? 'Processing...' : rentStatus.canPayNow ? 'Pay Current Rent' : 'Payment Locked'}
-                </Button>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4 text-sm">
+                  <div>
+                    <p className="text-gray-700 dark:text-dark-300">Days used: {rentStatus.daysUsed}</p>
+                    <p className="text-gray-700 dark:text-dark-300">Pending cycles: {rentStatus.pendingCycles}</p>
+                  </div>
+                  <div>
+                    <p className="text-gray-700 dark:text-dark-300">Monthly rent: {formatCurrency(rentStatus.monthlyRent || 0)}</p>
+                    <p className="text-gray-700 dark:text-dark-300">Months paid: {rentStatus.monthsPaid || 0}</p>
+                  </div>
+                </div>
+
+                <div className="pt-4 border-t border-gray-200 dark:border-dark-700">
+                  <CountdownTimer daysUntil={rentStatus.daysUntilPaymentDue} />
+                </div>
+
+                <div className="pt-4 border-t border-gray-200 dark:border-dark-700 space-y-2">
+                  <p className="text-sm text-green-600 dark:text-green-400">Consecutive payment months: {rentStatus.consecutiveMonths || 0}</p>
+                  <p className="text-sm text-cyan-600 dark:text-cyan-300">Next cycle: {rentStatus.nextCycleToPay}</p>
+                  <Button
+                    onClick={handleStudentRentPayment}
+                    disabled={!rentStatus.canPayNow || payRent.isPending}
+                    className="w-full"
+                  >
+                    {payRent.isPending ? 'Processing...' : rentStatus.canPayNow ? 'Pay Current Rent' : 'Payment Locked'}
+                  </Button>
+                </div>
               </div>
             )}
           </CardContent>
@@ -179,7 +192,7 @@ export const PaymentsPage = () => {
       <Card className="mt-6">
         <CardContent className="p-8 text-center">
           {isLoading ? (
-            <p className="text-slate-600 dark:text-slate-400">Loading...</p>
+            <p className="text-gray-600 dark:text-dark-400">Loading...</p>
           ) : (
             <DataTable
               columns={columns}

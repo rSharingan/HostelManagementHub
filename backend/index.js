@@ -24,7 +24,15 @@ function getConnectionString() {
   return `Driver={SQL Server};Server=${server};Database=${database};Trusted_Connection=yes;TrustServerCertificate=yes;`;
 }
 
-const connectionString = getConnectionString();
+// Get fallback connection string for Windows authentication
+function getFallbackConnectionString() {
+  const server = process.env.DB_SERVER || 'localhost';
+  const database = process.env.DB_NAME || 'HostelManagement';
+  return `Driver={SQL Server};Server=${server};Database=${database};Trusted_Connection=yes;TrustServerCertificate=yes;`;
+}
+
+let connectionString = getConnectionString();
+let fallbackConnectionString = getFallbackConnectionString();
 
 app.use(cors());
 app.use(express.json());
@@ -33,20 +41,40 @@ app.use(express.json());
 let conn;
 
 async function connectDB() {
+  // Try primary connection first
   try {
-    console.log('Connecting to MS SQL Server:', connectionString);
+    console.log('📡 Attempting primary connection with credentials...');
     conn = await new Promise((resolve, reject) => {
       sql.open(connectionString, (err, db) => {
         if (err) reject(err);
         else resolve(db);
       });
     });
-    console.log('✓ Connected to MS SQL Server successfully');
+    console.log('✅ Connected with primary credentials');
     return true;
-  } catch (err) {
-    console.error('✗ Database connection failed:', err.message);
-    console.error('Please check your database server and connection string.');
-    return false;
+  } catch (primaryErr) {
+    console.log('⚠️  Primary connection failed, attempting Windows authentication fallback...');
+    
+    // Try fallback with Windows authentication
+    try {
+      conn = await new Promise((resolve, reject) => {
+        sql.open(fallbackConnectionString, (err, db) => {
+          if (err) reject(err);
+          else resolve(db);
+        });
+      });
+      console.log('✅ Connected with Windows authentication (Trusted Connection)');
+      return true;
+    } catch (fallbackErr) {
+      console.error('❌ Both connection methods failed');
+      console.error('Primary error:', primaryErr.message);
+      console.error('Fallback error:', fallbackErr.message);
+      console.error('Please check:');
+      console.error('  1. SQL Server is running');
+      console.error('  2. Database "HostelManagement" exists');
+      console.error('  3. Either SQL credentials OR Windows auth is configured');
+      return false;
+    }
   }
 }
 
@@ -1296,6 +1324,33 @@ app.get('/api/fees/rent-status', async (req, res) => {
     const nextCycleToPay = paidCycles + 1;
     const nextPayDayThreshold = nextCycleToPay * 31;
 
+    // Calculate consecutive payment months based on rent cycle references
+    const rentCycleRows = await query(
+      "SELECT reference FROM Payments WHERE studentId = ? AND reference LIKE 'RENT_%_CYCLE_%' ORDER BY paymentDate DESC",
+      [student.id]
+    );
+
+    let consecutiveMonths = 0;
+    if (rentCycleRows && rentCycleRows.length > 0) {
+      const cycles = rentCycleRows
+        .map((row) => {
+          const match = row.reference.match(/CYCLE_(\d+)/);
+          return match ? Number(match[1]) : null;
+        })
+        .filter((cycle) => Number.isFinite(cycle))
+        .sort((a, b) => b - a);
+
+      let expectedCycle = cycles[0];
+      for (const cycle of cycles) {
+        if (cycle === expectedCycle) {
+          consecutiveMonths += 1;
+          expectedCycle -= 1;
+        } else {
+          break;
+        }
+      }
+    }
+
     return res.json({
       studentId: student.id,
       studentName: student.name,
@@ -1306,8 +1361,11 @@ app.get('/api/fees/rent-status', async (req, res) => {
       daysUsed,
       notifyRent: daysUsed >= 25,
       canPayNow: daysUsed >= nextPayDayThreshold,
+      daysUntilPaymentDue: Math.max(0, nextPayDayThreshold - daysUsed),
       pendingCycles,
       paidCycles,
+      monthsPaid: paidCycles,
+      consecutiveMonths,
       nextCycleToPay,
       status: pendingCycles > 0 ? 'DUE' : 'OK',
     });

@@ -9,11 +9,11 @@ export const Dialog = ({ open, onOpenChange, children }) => {
   return (
     <>
       <div
-        className="fixed inset-0 z-40 bg-black/50"
+        className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm"
         onClick={() => onOpenChange(false)}
       />
       <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-        <div className="bg-white dark:bg-slate-900 rounded-lg shadow-lg max-w-md w-full">
+        <div className="bg-white dark:bg-dark-800/80 border border-gray-200 dark:border-cyan-500/20 max-w-md w-full shadow-lg dark:shadow-glow-cyan rounded-2xl overflow-hidden backdrop-blur-sm dark:backdrop-blur-xl">
           {children}
         </div>
       </div>
@@ -23,7 +23,7 @@ export const Dialog = ({ open, onOpenChange, children }) => {
 
 export const DialogHeader = ({ children, className, ...props }) => {
   return (
-    <div className={cn('px-6 py-4 border-b border-slate-200 dark:border-slate-800', className)} {...props}>
+    <div className={cn('px-6 py-4 border-b border-gray-200 dark:border-cyan-500/10 bg-gradient-to-r from-gray-50 dark:from-cyan-500/5 to-transparent', className)} {...props}>
       {children}
     </div>
   )
@@ -31,7 +31,7 @@ export const DialogHeader = ({ children, className, ...props }) => {
 
 export const DialogTitle = ({ children, className, ...props }) => {
   return (
-    <h2 className={cn('text-lg font-semibold text-slate-900 dark:text-slate-50', className)} {...props}>
+    <h2 className={cn('text-lg font-semibold text-gray-900 dark:text-cyan-400', className)} {...props}>
       {children}
     </h2>
   )
@@ -48,7 +48,7 @@ export const DialogContent = ({ children, className, ...props }) => {
 export const DialogFooter = ({ children, className, ...props }) => {
   return (
     <div
-      className={cn('px-6 py-4 border-t border-slate-200 dark:border-slate-800 flex gap-3 justify-end', className)}
+      className={cn('px-6 py-4 border-t border-gray-200 dark:border-dark-800 flex gap-3 justify-end', className)}
       {...props}
     >
       {children}

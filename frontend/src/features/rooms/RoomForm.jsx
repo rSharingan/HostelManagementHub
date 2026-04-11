@@ -101,21 +101,21 @@ export const RoomForm = ({ room, onSubmit, loading, onCancel }) => {
           </div>
 
           <div>
-            <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Room Attributes</p>
+            <p className="text-sm font-medium text-gray-700 dark:text-dark-300 mb-3">Room Attributes</p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-dark-300">
                 <input type="checkbox" {...register('hasAC')} />
                 Air Conditioning (AC)
               </label>
-              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-dark-300">
                 <input type="checkbox" {...register('hasAttachedBathroom')} />
                 Attached Bathroom
               </label>
-              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-dark-300">
                 <input type="checkbox" {...register('hasWifi')} />
                 Wi-Fi
               </label>
-              <label className="flex items-center gap-2 text-sm text-slate-700 dark:text-slate-300">
+              <label className="flex items-center gap-2 text-sm text-gray-700 dark:text-dark-300">
                 <input type="checkbox" {...register('hasBalcony')} />
                 Balcony
               </label>

@@ -204,7 +204,7 @@ export const MaintenancePage = () => {
             {row.original.status}
           </Badge>
           {row.original.studentApprovalStatus && (
-            <span className="text-xs text-slate-500">Student: {row.original.studentApprovalStatus}</span>
+            <span className="text-xs text-gray-500 dark:text-dark-400">Student: {row.original.studentApprovalStatus}</span>
           )}
         </div>
       ),
@@ -220,7 +220,7 @@ export const MaintenancePage = () => {
             {canAssignComplaint(user?.role, complaint) && (
               <>
                 <select
-                  className="w-full px-2 py-1 border border-slate-300 rounded"
+                  className="w-full px-2 py-1 border border-gray-300 dark:border-dark-600 rounded bg-white dark:bg-dark-800 text-gray-900 dark:text-dark-50"
                   value={draft.staffId}
                   onChange={(e) => setDraft(complaint.id, 'staffId', e.target.value)}
                 >
@@ -232,7 +232,7 @@ export const MaintenancePage = () => {
                   ))}
                 </select>
                 <select
-                  className="w-full px-2 py-1 border border-slate-300 rounded"
+                  className="w-full px-2 py-1 border border-gray-300 dark:border-dark-600 rounded bg-white dark:bg-dark-800 text-gray-900 dark:text-dark-50"
                   value={draft.roomId}
                   onChange={(e) => setDraft(complaint.id, 'roomId', e.target.value)}
                 >
@@ -296,7 +296,7 @@ export const MaintenancePage = () => {
           <form className="grid grid-cols-1 md:grid-cols-4 gap-3" onSubmit={handleCreate}>
             {user?.role !== 'STUDENT' && (
               <select
-                className="w-full px-3 py-2 border border-slate-300 rounded-lg bg-white dark:bg-slate-800"
+                className="w-full px-3 py-2 border border-gray-300 dark:border-dark-600 rounded-lg bg-white dark:bg-dark-800 text-gray-900 dark:text-dark-50"
                 value={form.roomId}
                 onChange={(e) => setForm((prev) => ({ ...prev, roomId: e.target.value }))}
               >
@@ -334,7 +334,7 @@ export const MaintenancePage = () => {
       <Card className="mt-6">
         <CardContent className="p-8 text-center">
           {isLoading ? (
-            <p className="text-slate-600 dark:text-slate-400">Loading...</p>
+            <p className="text-gray-600 dark:text-dark-400">Loading...</p>
           ) : (
             <DataTable
               columns={columns}

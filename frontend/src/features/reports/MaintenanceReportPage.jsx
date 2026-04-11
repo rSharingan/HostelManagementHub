@@ -17,7 +17,7 @@ export const MaintenanceReportPage = () => {
 
       <Card>
         <CardContent className="p-8 text-center">
-          <p className="text-slate-600 dark:text-slate-400">
+          <p className="text-gray-600 dark:text-dark-400">
             TODO: Implement maintenance report with charts
           </p>
         </CardContent>

@@ -10,7 +10,7 @@ export const RequireAuth = ({ children, requiredRoles }) => {
       <div className="flex items-center justify-center h-screen bg-slate-50 dark:bg-slate-950">
         <div className="text-center">
           <div className="w-12 h-12 border-4 border-blue-500 border-t-transparent rounded-full animate-spin mx-auto mb-4"></div>
-          <p className="text-slate-600 dark:text-slate-400">Loading...</p>
+          <p className="text-gray-600 dark:text-dark-400">Loading...</p>
         </div>
       </div>
     )

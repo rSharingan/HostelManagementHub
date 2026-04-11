@@ -126,7 +126,7 @@ export const RoomsPage = () => {
         ].filter(Boolean)
 
         if (attrs.length === 0) {
-          return <span className="text-gray-500">Standard</span>
+          return <span className="text-gray-500 dark:text-dark-400">Standard</span>
         }
 
         return (
@@ -154,7 +154,7 @@ export const RoomsPage = () => {
       cell: ({ row }) => {
         const allocated = row.original.allocatedStudents || [];
         if (allocated.length === 0) {
-          return <span className="text-gray-500">None</span>;
+          return <span className="text-gray-500 dark:text-dark-400">None</span>;
         }
         return (
           <div className="flex flex-col gap-1">
@@ -271,8 +271,8 @@ export const RoomsPage = () => {
         </div>
       ) : (
         <>
-          <div className="mb-4 p-4 border border-slate-200 dark:border-slate-700 rounded-lg">
-            <p className="text-sm font-medium text-slate-700 dark:text-slate-300 mb-3">Filter Rooms</p>
+          <div className="mb-4 p-4 border border-gray-200 dark:border-dark-700 rounded-lg">
+            <p className="text-sm font-medium text-gray-700 dark:text-dark-300 mb-3">Filter Rooms</p>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">
               <label className="flex items-center gap-2">
                 <input

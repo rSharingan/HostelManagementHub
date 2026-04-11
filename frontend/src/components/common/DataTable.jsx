@@ -63,19 +63,19 @@ export const DataTable = ({
               {table.getHeaderGroups().map((headerGroup) => (
                 <tr
                   key={headerGroup.id}
-                  className="border-b border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800"
+                  className="border-b border-gray-200 dark:border-cyan-500/10 bg-gray-50 dark:bg-dark-800/50"
                 >
                   {headerGroup.headers.map((header) => (
                     <th
                       key={header.id}
-                      className="px-6 py-3 text-left font-semibold text-slate-700 dark:text-slate-300"
+                      className="px-6 py-3 text-left font-semibold text-gray-700 dark:text-cyan-400"
                     >
                       {header.isPlaceholder ? null : (
                         <div
                           onClick={header.column.getToggleSortingHandler()}
                           className={
                             header.column.getCanSort()
-                              ? 'cursor-pointer select-none'
+                              ? 'cursor-pointer select-none hover:text-gray-900 dark:hover:text-cyan-300 transition-colors'
                               : ''
                           }
                         >
@@ -109,16 +109,16 @@ export const DataTable = ({
                   <tr
                     key={row.id}
                     onClick={() => onRowClick?.(row.original)}
-                    className={`border-b border-slate-200 dark:border-slate-800 ${
+                    className={`border-b border-gray-200 dark:border-dark-700/30 transition-all duration-300 ${
                       onRowClick
-                        ? 'cursor-pointer hover:bg-slate-50 dark:hover:bg-slate-800'
+                        ? 'cursor-pointer hover:bg-gray-50 dark:hover:bg-dark-700/50 hover:border-cyan-500/20 dark:hover:border-cyan-500/20'
                         : ''
                     }`}
                   >
                     {row.getVisibleCells().map((cell) => (
                       <td
                         key={cell.id}
-                        className="px-6 py-3 text-slate-700 dark:text-slate-400"
+                        className="px-6 py-4 text-gray-700 dark:text-dark-300"
                       >
                         {flexRender(
                           cell.column.columnDef.cell,
@@ -134,8 +134,8 @@ export const DataTable = ({
         </div>
 
         {/* Pagination */}
-        <CardContent className="border-t border-slate-200 dark:border-slate-800 p-4 flex items-center justify-between">
-          <div className="text-sm text-slate-600 dark:text-slate-400">
+        <CardContent className="border-t border-gray-200 dark:border-cyan-500/10 p-4 flex items-center justify-between bg-gray-50 dark:bg-dark-800/50">
+          <div className="text-sm text-gray-600 dark:text-dark-400">
             Page {table.getState().pagination.pageIndex + 1} of{' '}
             {table.getPageCount()}
           </div>
