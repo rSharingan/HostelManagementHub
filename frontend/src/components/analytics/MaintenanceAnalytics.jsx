@@ -78,9 +78,9 @@ export const MaintenanceAnalytics = () => {
             <div className="flex items-center space-x-2">
               <Clock className="w-5 h-5 text-orange-500" />
               <div>
-                <p className="text-sm text-gray-600 dark:text-dark-300">Issue Types</p>
+                <p className="text-sm text-gray-600 dark:text-dark-300">Priority Levels</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-dark-50">
-                  {data.issueTypeDistribution?.length || 0}
+                  {data.priorityDistribution?.length || 0}
                 </p>
               </div>
             </div>
@@ -90,11 +90,11 @@ export const MaintenanceAnalytics = () => {
         <Card>
           <CardContent className="p-4">
             <div className="flex items-center space-x-2">
-              <DollarSign className="w-5 h-5 text-green-500" />
+              <TrendingUp className="w-5 h-5 text-green-500" />
               <div>
-                <p className="text-sm text-gray-600 dark:text-dark-300">Total Cost</p>
+                <p className="text-sm text-gray-600 dark:text-dark-300">Resolved Requests</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-dark-50">
-                  {formatCurrency(data.totalCost)}
+                  {data.resolvedRequests || 0}
                 </p>
               </div>
             </div>
@@ -106,12 +106,9 @@ export const MaintenanceAnalytics = () => {
             <div className="flex items-center space-x-2">
               <TrendingUp className="w-5 h-5 text-purple-500" />
               <div>
-                <p className="text-sm text-gray-600 dark:text-dark-300">Avg Cost</p>
+                <p className="text-sm text-gray-600 dark:text-dark-300">Resolution Rate</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-dark-50">
-                  {formatCurrency(data.costAnalysis?.length > 0
-                    ? data.costAnalysis.reduce((sum, item) => sum + item.avg_cost, 0) / data.costAnalysis.length
-                    : 0
-                  )}
+                  {data.totalRequests > 0 ? Math.round((data.resolvedRequests / data.totalRequests) * 100) : 0}%
                 </p>
               </div>
             </div>
@@ -123,11 +120,11 @@ export const MaintenanceAnalytics = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
-            <CardTitle>Issue Type Distribution</CardTitle>
+            <CardTitle>Priority Distribution</CardTitle>
           </CardHeader>
           <CardContent>
             <AnalyticsPieChart
-              data={data.issueTypeDistribution}
+              data={data.priorityDistribution}
               title=""
               height={250}
             />
@@ -151,22 +148,22 @@ export const MaintenanceAnalytics = () => {
       {/* Resolution Time Analysis */}
       <Card>
         <CardHeader>
-          <CardTitle>Average Resolution Time by Issue Type</CardTitle>
+          <CardTitle>Average Resolution Time by Priority</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-dark-700">
-                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Issue Type</th>
+                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Priority</th>
                   <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Avg Resolution Time</th>
                   <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Total Issues</th>
                 </tr>
               </thead>
               <tbody>
-                {data.resolutionTimeByType?.map((item, index) => (
+                {data.resolutionTimeByPriority?.map((item, index) => (
                   <tr key={index} className="border-b border-gray-100 dark:border-dark-800">
-                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{item.issueType}</td>
+                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{item.priority}</td>
                     <td className="py-2 px-4 text-gray-900 dark:text-dark-50">
                       {formatHours(item.avg_resolution_hours)}
                     </td>
@@ -179,33 +176,27 @@ export const MaintenanceAnalytics = () => {
         </CardContent>
       </Card>
 
-      {/* Cost Analysis */}
+      {/* Room Issues Analysis */}
       <Card>
         <CardHeader>
-          <CardTitle>Cost Analysis by Issue Type</CardTitle>
+          <CardTitle>Most Problematic Rooms</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-gray-200 dark:border-dark-700">
-                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Issue Type</th>
-                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Total Issues</th>
-                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Total Cost</th>
-                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Average Cost</th>
+                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Room Number</th>
+                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Room Type</th>
+                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Issue Count</th>
                 </tr>
               </thead>
               <tbody>
-                {data.costAnalysis?.map((item, index) => (
+                {data.roomIssues?.slice(0, 10).map((room, index) => (
                   <tr key={index} className="border-b border-gray-100 dark:border-dark-800">
-                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{item.issueType}</td>
-                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{item.issue_count}</td>
-                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50 font-semibold">
-                      {formatCurrency(item.total_cost)}
-                    </td>
-                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50">
-                      {formatCurrency(item.avg_cost)}
-                    </td>
+                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{room.roomNumber}</td>
+                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{room.room_type}</td>
+                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{room.issue_count}</td>
                   </tr>
                 ))}
               </tbody>

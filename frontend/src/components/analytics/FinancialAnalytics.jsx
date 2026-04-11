@@ -151,7 +151,7 @@ export const FinancialAnalytics = () => {
                 <tr className="border-b border-gray-200 dark:border-dark-700">
                   <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Student</th>
                   <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Room</th>
-                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Pending Cycles</th>
+                  <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Pending Invoices</th>
                   <th className="text-left py-2 px-4 font-medium text-gray-900 dark:text-dark-50">Total Dues</th>
                 </tr>
               </thead>
@@ -160,7 +160,7 @@ export const FinancialAnalytics = () => {
                   <tr key={index} className="border-b border-gray-100 dark:border-dark-800">
                     <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{student.name}</td>
                     <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{student.roomId || 'N/A'}</td>
-                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{student.pending_cycles}</td>
+                    <td className="py-2 px-4 text-gray-900 dark:text-dark-50">{student.pending_invoices}</td>
                     <td className="py-2 px-4 text-gray-900 dark:text-dark-50 font-semibold">
                       {formatCurrency(student.total_dues)}
                     </td>

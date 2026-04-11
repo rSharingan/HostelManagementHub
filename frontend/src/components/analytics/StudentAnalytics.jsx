@@ -64,9 +64,9 @@ export const StudentAnalytics = () => {
             <div className="flex items-center space-x-2">
               <GraduationCap className="w-5 h-5 text-green-500" />
               <div>
-                <p className="text-sm text-gray-600 dark:text-dark-300">Courses</p>
+                <p className="text-sm text-gray-600 dark:text-dark-300">Departments</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-dark-50">
-                  {data.courseDistribution?.length || 0}
+                  {data.departmentDistribution?.length || 0}
                 </p>
               </div>
             </div>
@@ -78,9 +78,9 @@ export const StudentAnalytics = () => {
             <div className="flex items-center space-x-2">
               <Calendar className="w-5 h-5 text-orange-500" />
               <div>
-                <p className="text-sm text-gray-600 dark:text-dark-300">Age Groups</p>
+                <p className="text-sm text-gray-600 dark:text-dark-300">Year of Study</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-dark-50">
-                  {data.ageDistribution?.length || 0}
+                  {data.yearOfStudyDistribution?.length || 0}
                 </p>
               </div>
             </div>
@@ -90,11 +90,11 @@ export const StudentAnalytics = () => {
         <Card>
           <CardContent className="p-4">
             <div className="flex items-center space-x-2">
-              <MapPin className="w-5 h-5 text-purple-500" />
+              <Users className="w-5 h-5 text-purple-500" />
               <div>
-                <p className="text-sm text-gray-600 dark:text-dark-300">Nationalities</p>
+                <p className="text-sm text-gray-600 dark:text-dark-300">Status Types</p>
                 <p className="text-2xl font-bold text-gray-900 dark:text-dark-50">
-                  {data.nationalityDistribution?.length || 0}
+                  {data.statusDistribution?.length || 0}
                 </p>
               </div>
             </div>
@@ -106,11 +106,11 @@ export const StudentAnalytics = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
-            <CardTitle>Course Distribution</CardTitle>
+            <CardTitle>Department Distribution</CardTitle>
           </CardHeader>
           <CardContent>
             <AnalyticsPieChart
-              data={data.courseDistribution}
+              data={data.departmentDistribution}
               title=""
               height={250}
             />
@@ -119,11 +119,11 @@ export const StudentAnalytics = () => {
 
         <Card>
           <CardHeader>
-            <CardTitle>Age Distribution</CardTitle>
+            <CardTitle>Status Distribution</CardTitle>
           </CardHeader>
           <CardContent>
             <AnalyticsPieChart
-              data={data.ageDistribution}
+              data={data.statusDistribution}
               title=""
               height={250}
             />
@@ -132,11 +132,11 @@ export const StudentAnalytics = () => {
 
         <Card>
           <CardHeader>
-            <CardTitle>Gender Distribution</CardTitle>
+            <CardTitle>Year of Study Distribution</CardTitle>
           </CardHeader>
           <CardContent>
             <AnalyticsPieChart
-              data={data.genderDistribution}
+              data={data.yearOfStudyDistribution}
               title=""
               height={250}
             />
@@ -145,11 +145,11 @@ export const StudentAnalytics = () => {
 
         <Card>
           <CardHeader>
-            <CardTitle>Nationality Distribution</CardTitle>
+            <CardTitle>Registration Year Distribution</CardTitle>
           </CardHeader>
           <CardContent>
             <AnalyticsPieChart
-              data={data.nationalityDistribution}
+              data={data.registrationYearDistribution}
               title=""
               height={250}
             />
@@ -175,15 +175,15 @@ export const StudentAnalytics = () => {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
-            <CardTitle>Top Courses</CardTitle>
+            <CardTitle>Top Departments</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {data.courseDistribution?.slice(0, 5).map((course, index) => (
+              {data.departmentDistribution?.slice(0, 5).map((department, index) => (
                 <div key={index} className="flex justify-between items-center">
-                  <span className="text-sm text-gray-900 dark:text-dark-50">{course.course}</span>
+                  <span className="text-sm text-gray-900 dark:text-dark-50">{department.department}</span>
                   <span className="text-sm font-semibold text-gray-600 dark:text-dark-300">
-                    {course.count} ({course.percentage}%)
+                    {department.count} ({department.percentage}%)
                   </span>
                 </div>
               ))}
@@ -193,15 +193,15 @@ export const StudentAnalytics = () => {
 
         <Card>
           <CardHeader>
-            <CardTitle>Nationality Breakdown</CardTitle>
+            <CardTitle>Registration Year Breakdown</CardTitle>
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {data.nationalityDistribution?.slice(0, 5).map((nationality, index) => (
+              {data.registrationYearDistribution?.slice(0, 5).map((year, index) => (
                 <div key={index} className="flex justify-between items-center">
-                  <span className="text-sm text-gray-900 dark:text-dark-50">{nationality.nationality}</span>
+                  <span className="text-sm text-gray-900 dark:text-dark-50">{year.registration_year}</span>
                   <span className="text-sm font-semibold text-gray-600 dark:text-dark-300">
-                    {nationality.count} ({nationality.percentage}%)
+                    {year.count} students
                   </span>
                 </div>
               ))}

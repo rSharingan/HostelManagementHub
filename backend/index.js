@@ -2214,51 +2214,51 @@ app.get('/api/analytics/financial', async (req, res) => {
   try {
     // Monthly revenue (last 12 months)
     const revenueQuery = `
-      SELECT 
+      SELECT
         YEAR(paymentDate) as year,
         MONTH(paymentDate) as month,
         SUM(amount) as total_revenue,
         COUNT(*) as payment_count
-      FROM Payments 
+      FROM Payments
       WHERE paymentDate >= DATEADD(MONTH, -12, GETDATE())
       GROUP BY YEAR(paymentDate), MONTH(paymentDate)
       ORDER BY year DESC, month DESC
     `;
     const revenueResult = await query(revenueQuery);
 
-    // Outstanding dues by student
+    // Outstanding dues by student (using Invoices table)
     const duesQuery = `
-      SELECT 
+      SELECT
         s.name,
         s.email,
         a.roomId,
-        COUNT(*) as pending_cycles,
-        SUM(CASE WHEN f.status = 'PENDING' THEN f.amount ELSE 0 END) as total_dues
-      FROM Fees f
-      JOIN Students s ON f.studentId = s.id
+        COUNT(*) as pending_invoices,
+        SUM(CASE WHEN i.status = 'PENDING' THEN i.amount ELSE 0 END) as total_dues
+      FROM Invoices i
+      JOIN Students s ON i.studentId = s.id
       LEFT JOIN Allocations a ON s.id = a.studentId AND a.status = 'ACTIVE'
-      WHERE f.status = 'PENDING'
+      WHERE i.status = 'PENDING'
       GROUP BY s.id, s.name, s.email, a.roomId
-      HAVING SUM(CASE WHEN f.status = 'PENDING' THEN f.amount ELSE 0 END) > 0
+      HAVING SUM(CASE WHEN i.status = 'PENDING' THEN i.amount ELSE 0 END) > 0
       ORDER BY total_dues DESC
     `;
     const duesResult = await query(duesQuery);
 
-    // Payment method distribution
+    // Payment method distribution (using 'method' column)
     const paymentMethodQuery = `
-      SELECT 
-        paymentMethod,
+      SELECT
+        method as paymentMethod,
         COUNT(*) as count,
         SUM(amount) as total_amount,
         ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Payments), 1) as percentage
-      FROM Payments 
-      GROUP BY paymentMethod
+      FROM Payments
+      GROUP BY method
     `;
     const paymentMethodResult = await query(paymentMethodQuery);
 
     // Revenue by room type
     const revenueByRoomQuery = `
-      SELECT 
+      SELECT
         r.type,
         COUNT(DISTINCT p.id) as payment_count,
         SUM(p.amount) as total_revenue
@@ -2286,97 +2286,70 @@ app.get('/api/analytics/financial', async (req, res) => {
 
 app.get('/api/analytics/students', async (req, res) => {
   try {
-    // Course-wise distribution
-    const courseQuery = `
-      SELECT 
-        course,
+    // Department-wise distribution (using department instead of course)
+    const departmentQuery = `
+      SELECT
+        department,
         COUNT(*) as count,
         ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Students), 1) as percentage
-      FROM Students 
-      WHERE course IS NOT NULL
-      GROUP BY course
+      FROM Students
+      WHERE department IS NOT NULL AND department != ''
+      GROUP BY department
       ORDER BY count DESC
     `;
-    const courseResult = await query(courseQuery);
-
-    // Age distribution
-    const ageQuery = `
-      SELECT 
-        CASE 
-          WHEN DATEDIFF(YEAR, dateOfBirth, GETDATE()) < 18 THEN 'Under 18'
-          WHEN DATEDIFF(YEAR, dateOfBirth, GETDATE()) BETWEEN 18 AND 20 THEN '18-20'
-          WHEN DATEDIFF(YEAR, dateOfBirth, GETDATE()) BETWEEN 21 AND 23 THEN '21-23'
-          WHEN DATEDIFF(YEAR, dateOfBirth, GETDATE()) BETWEEN 24 AND 26 THEN '24-26'
-          ELSE '27+'
-        END as age_group,
-        COUNT(*) as count,
-        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Students WHERE dateOfBirth IS NOT NULL), 1) as percentage
-      FROM Students 
-      WHERE dateOfBirth IS NOT NULL
-      GROUP BY 
-        CASE 
-          WHEN DATEDIFF(YEAR, dateOfBirth, GETDATE()) < 18 THEN 'Under 18'
-          WHEN DATEDIFF(YEAR, dateOfBirth, GETDATE()) BETWEEN 18 AND 20 THEN '18-20'
-          WHEN DATEDIFF(YEAR, dateOfBirth, GETDATE()) BETWEEN 21 AND 23 THEN '21-23'
-          WHEN DATEDIFF(YEAR, dateOfBirth, GETDATE()) BETWEEN 24 AND 26 THEN '24-26'
-          ELSE '27+'
-        END
-      ORDER BY 
-        CASE age_group
-          WHEN 'Under 18' THEN 1
-          WHEN '18-20' THEN 2
-          WHEN '21-23' THEN 3
-          WHEN '24-26' THEN 4
-          ELSE 5
-        END
-    `;
-    const ageResult = await query(ageQuery);
-
-    // Gender distribution
-    const genderQuery = `
-      SELECT 
-        gender,
-        COUNT(*) as count,
-        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Students), 1) as percentage
-      FROM Students 
-      WHERE gender IS NOT NULL
-      GROUP BY gender
-    `;
-    const genderResult = await query(genderQuery);
-
-    // Nationality distribution
-    const nationalityQuery = `
-      SELECT 
-        nationality,
-        COUNT(*) as count,
-        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Students), 1) as percentage
-      FROM Students 
-      WHERE nationality IS NOT NULL
-      GROUP BY nationality
-      ORDER BY count DESC
-    `;
-    const nationalityResult = await query(nationalityQuery);
+    const departmentResult = await query(departmentQuery);
 
     // Year of study distribution
     const yearQuery = `
-      SELECT 
+      SELECT
         yearOfStudy,
         COUNT(*) as count,
         ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Students), 1) as percentage
-      FROM Students 
+      FROM Students
       WHERE yearOfStudy IS NOT NULL
       GROUP BY yearOfStudy
       ORDER BY yearOfStudy
     `;
     const yearResult = await query(yearQuery);
 
+    // Status distribution
+    const statusQuery = `
+      SELECT
+        status,
+        COUNT(*) as count,
+        ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Students), 1) as percentage
+      FROM Students
+      GROUP BY status
+    `;
+    const statusResult = await query(statusQuery);
+
+    // Students by registration year (derived from registration number if available)
+    const registrationYearQuery = `
+      SELECT
+        CASE
+          WHEN LEN(registrationNumber) >= 4 AND ISNUMERIC(LEFT(registrationNumber, 4)) = 1
+          THEN LEFT(registrationNumber, 4)
+          ELSE 'Unknown'
+        END as registration_year,
+        COUNT(*) as count
+      FROM Students
+      WHERE registrationNumber IS NOT NULL AND registrationNumber != ''
+      GROUP BY
+        CASE
+          WHEN LEN(registrationNumber) >= 4 AND ISNUMERIC(LEFT(registrationNumber, 4)) = 1
+          THEN LEFT(registrationNumber, 4)
+          ELSE 'Unknown'
+        END
+      ORDER BY registration_year DESC
+    `;
+    const registrationYearResult = await query(registrationYearQuery);
+
     res.json({
-      courseDistribution: courseResult,
-      ageDistribution: ageResult,
-      genderDistribution: genderResult,
-      nationalityDistribution: nationalityResult,
+      departmentDistribution: departmentResult,
       yearOfStudyDistribution: yearResult,
-      totalStudents: courseResult.reduce((sum, item) => sum + item.count, 0)
+      statusDistribution: statusResult,
+      registrationYearDistribution: registrationYearResult,
+      totalStudents: departmentResult.reduce((sum, item) => sum + item.count, 0) || yearResult.reduce((sum, item) => sum + item.count, 0) || 0
     });
   } catch (err) {
     console.error('Student analytics error:', err);
@@ -2386,77 +2359,77 @@ app.get('/api/analytics/students', async (req, res) => {
 
 app.get('/api/analytics/maintenance', async (req, res) => {
   try {
-    // Issue type distribution
-    const issueTypeQuery = `
-      SELECT 
-        issueType,
+    // Priority distribution
+    const priorityQuery = `
+      SELECT
+        priority,
         COUNT(*) as count,
         ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Maintenance), 1) as percentage
-      FROM Maintenance 
-      GROUP BY issueType
+      FROM Maintenance
+      GROUP BY priority
       ORDER BY count DESC
     `;
-    const issueTypeResult = await query(issueTypeQuery);
+    const priorityResult = await query(priorityQuery);
 
     // Status distribution
     const statusQuery = `
-      SELECT 
+      SELECT
         status,
         COUNT(*) as count,
         ROUND((COUNT(*) * 100.0) / (SELECT COUNT(*) FROM Maintenance), 1) as percentage
-      FROM Maintenance 
+      FROM Maintenance
       GROUP BY status
     `;
     const statusResult = await query(statusQuery);
 
-    // Average resolution time by issue type
+    // Average resolution time by priority
     const resolutionTimeQuery = `
-      SELECT 
-        issueType,
+      SELECT
+        priority,
         AVG(DATEDIFF(HOUR, reportedDate, resolvedDate)) as avg_resolution_hours,
         COUNT(*) as total_issues
-      FROM Maintenance 
-      WHERE status = 'RESOLVED' AND resolvedDate IS NOT NULL
-      GROUP BY issueType
+      FROM Maintenance
+      WHERE status = 'CLOSED' AND resolvedDate IS NOT NULL
+      GROUP BY priority
       ORDER BY avg_resolution_hours DESC
     `;
     const resolutionTimeResult = await query(resolutionTimeQuery);
 
     // Monthly maintenance requests
     const monthlyQuery = `
-      SELECT 
+      SELECT
         YEAR(reportedDate) as year,
         MONTH(reportedDate) as month,
         COUNT(*) as request_count
-      FROM Maintenance 
+      FROM Maintenance
       WHERE reportedDate >= DATEADD(MONTH, -12, GETDATE())
       GROUP BY YEAR(reportedDate), MONTH(reportedDate)
       ORDER BY year DESC, month DESC
     `;
     const monthlyResult = await query(monthlyQuery);
 
-    // Cost analysis by issue type
-    const costQuery = `
-      SELECT 
-        issueType,
+    // Issues by room (top problematic rooms)
+    const roomIssuesQuery = `
+      SELECT
+        r.roomNumber,
         COUNT(*) as issue_count,
-        SUM(cost) as total_cost,
-        AVG(cost) as avg_cost
-      FROM Maintenance 
-      WHERE cost IS NOT NULL AND cost > 0
-      GROUP BY issueType
-      ORDER BY total_cost DESC
+        r.type as room_type
+      FROM Maintenance m
+      LEFT JOIN Rooms r ON m.roomId = r.id
+      WHERE m.roomId IS NOT NULL
+      GROUP BY r.id, r.roomNumber, r.type
+      ORDER BY issue_count DESC
     `;
-    const costResult = await query(costQuery);
+    const roomIssuesResult = await query(roomIssuesQuery);
 
     res.json({
-      issueTypeDistribution: issueTypeResult,
+      priorityDistribution: priorityResult,
       statusDistribution: statusResult,
-      resolutionTimeByType: resolutionTimeResult,
+      resolutionTimeByPriority: resolutionTimeResult,
       monthlyRequests: monthlyResult,
-      costAnalysis: costResult,
-      totalRequests: issueTypeResult.reduce((sum, item) => sum + item.count, 0),
-      totalCost: costResult.reduce((sum, item) => sum + item.total_cost, 0)
+      roomIssues: roomIssuesResult,
+      totalRequests: priorityResult.reduce((sum, item) => sum + item.count, 0),
+      resolvedRequests: statusResult.find(item => item.status === 'CLOSED')?.count || 0
     });
   } catch (err) {
     console.error('Maintenance analytics error:', err);

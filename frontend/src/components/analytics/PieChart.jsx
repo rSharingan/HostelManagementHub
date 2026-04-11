@@ -83,7 +83,7 @@ export const AnalyticsPieChart = ({
   // Transform data to include colors
   const chartData = data?.map((item, index) => ({
     ...item,
-    name: item[nameKey] || item.label || item.type || item.status || item.course || item.age_group || item.gender || item.nationality || item.yearOfStudy || item.issueType,
+    name: item[nameKey] || item.label || item.type || item.status || item.course || item.age_group || item.gender || item.nationality || item.yearOfStudy || item.issueType || item.department || item.priority || item.paymentMethod || item.method || item.registration_year,
     value: item[dataKey] || item.count || item.total_revenue || item.total_dues || item.total_cost,
     fill: CHART_COLORS[index % CHART_COLORS.length]
   })) || []
