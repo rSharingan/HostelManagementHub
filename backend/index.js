@@ -5,6 +5,20 @@ import 'dotenv/config';
 
 const app = express();
 const PORT = process.env.PORT || 5000;
+const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || 'http://localhost:5173';
+const BACKEND_BASE_URL = process.env.BACKEND_BASE_URL || `http://localhost:${PORT}`;
+
+const BKASH_SANDBOX_BASE_URL = process.env.BKASH_SANDBOX_BASE_URL || 'https://checkout.sandbox.bka.sh/v1.2.0-beta';
+const BKASH_SANDBOX_TOKEN_URL = process.env.BKASH_SANDBOX_TOKEN_URL || `${BKASH_SANDBOX_BASE_URL}/tokenized/checkout/token/grant?grant_type=client_credentials`;
+const BKASH_SANDBOX_CREATE_URL = process.env.BKASH_SANDBOX_CREATE_URL || `${BKASH_SANDBOX_BASE_URL}/checkout/payment/create`;
+const BKASH_SANDBOX_APP_KEY = process.env.BKASH_SANDBOX_APP_KEY;
+const BKASH_SANDBOX_APP_SECRET = process.env.BKASH_SANDBOX_APP_SECRET;
+
+const NAGAD_SANDBOX_INITIATE_URL = process.env.NAGAD_SANDBOX_INITIATE_URL;
+const NAGAD_SANDBOX_STATUS_URL = process.env.NAGAD_SANDBOX_STATUS_URL;
+const NAGAD_MERCHANT_ID = process.env.NAGAD_SANDBOX_MERCHANT_ID;
+const NAGAD_API_KEY = process.env.NAGAD_SANDBOX_API_KEY;
+const NAGAD_API_SECRET = process.env.NAGAD_SANDBOX_API_SECRET;
 
 function getConnectionString() {
   const server = process.env.DB_SERVER || 'localhost';
@@ -36,6 +50,106 @@ let fallbackConnectionString = getFallbackConnectionString();
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const body = await response.text();
+  let parsed;
+  try {
+    parsed = body ? JSON.parse(body) : {};
+  } catch (err) {
+    throw new Error(`Invalid JSON response from ${url}: ${body}`);
+  }
+
+  if (!response.ok) {
+    const message = parsed?.message || parsed?.error || body || `Request failed with status ${response.status}`;
+    throw new Error(message);
+  }
+
+  return parsed;
+}
+
+async function createBkashSandboxPayment({ transactionId, amount, invoiceId, studentId, returnUrl }) {
+  if (!BKASH_SANDBOX_APP_KEY || !BKASH_SANDBOX_APP_SECRET) {
+    throw new Error('bKash sandbox credentials are not configured.')
+  }
+
+  const tokenPayload = {
+    app_key: BKASH_SANDBOX_APP_KEY,
+    app_secret: BKASH_SANDBOX_APP_SECRET,
+  };
+
+  const tokenResponse = await fetchJson(BKASH_SANDBOX_TOKEN_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(tokenPayload),
+  });
+
+  const authToken = tokenResponse?.id_token || tokenResponse?.idToken || tokenResponse?.token || tokenResponse?.access_token;
+  if (!authToken) {
+    throw new Error('Unable to obtain bKash sandbox access token.')
+  }
+
+  const createPayload = {
+    amount: String(amount),
+    currency: 'BDT',
+    intent: 'sale',
+    merchantInvoiceNumber: transactionId,
+    callbackURL: returnUrl,
+    merchantAssociationInfo: transactionId,
+  };
+
+  const createResponse = await fetchJson(BKASH_SANDBOX_CREATE_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: authToken,
+      'X-APP-Key': BKASH_SANDBOX_APP_KEY,
+    },
+    body: JSON.stringify(createPayload),
+  });
+
+  return createResponse?.paymentURL || createResponse?.redirectUrl || createResponse?.bkashURL || createResponse?.checkoutURL || createResponse?.url;
+}
+
+async function createNagadSandboxPayment({ transactionId, amount, invoiceId, studentId, returnUrl }) {
+  if (!NAGAD_MERCHANT_ID || !NAGAD_API_KEY) {
+    throw new Error('Nagad sandbox credentials are not configured.')
+  }
+  if (!NAGAD_SANDBOX_INITIATE_URL) {
+    throw new Error('Nagad sandbox initiate URL is not configured.')
+  }
+
+  const createPayload = {
+    merchantId: NAGAD_MERCHANT_ID,
+    amount: String(amount),
+    currency: 'BDT',
+    invoiceNumber: transactionId,
+    callbackUrl: returnUrl,
+    customerReference: String(studentId),
+  };
+
+  const createResponse = await fetchJson(NAGAD_SANDBOX_INITIATE_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-API-KEY': NAGAD_API_KEY,
+      ...(NAGAD_API_SECRET ? { 'X-API-SECRET': NAGAD_API_SECRET } : {}),
+    },
+    body: JSON.stringify(createPayload),
+  });
+
+  return createResponse?.paymentURL || createResponse?.redirectUrl || createResponse?.checkoutURL || createResponse?.url;
+}
+
+async function getPaymentProviderRedirectUrl({ method, transactionId, amount, invoiceId, studentId, returnUrl }) {
+  if (method === 'NAGAD') {
+    return await createNagadSandboxPayment({ transactionId, amount, invoiceId, studentId, returnUrl });
+  }
+
+  return await createBkashSandboxPayment({ transactionId, amount, invoiceId, studentId, returnUrl });
+}
 
 // Database connection
 let conn;
@@ -445,6 +559,14 @@ async function ensureFeatureTables() {
       )
     END
   `)
+
+  await ensureColumnExists('Payments', 'status', "status NVARCHAR(20) NOT NULL DEFAULT 'PENDING'")
+  await ensureColumnExists('Payments', 'transaction_id', 'transaction_id NVARCHAR(100) NULL')
+  await ensureColumnExists('Payments', 'created_at', 'created_at DATETIME2 DEFAULT GETDATE()')
+
+  // Note: Foreign keys added conditionally to avoid conflicts with existing data
+  // await ensureForeignKey('FK_Payments_Invoices', 'Payments', 'FOREIGN KEY (invoiceId) REFERENCES dbo.Invoices(id)')
+  // await ensureForeignKey('FK_Payments_Students', 'Payments', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
 
   await query(`
     IF OBJECT_ID('dbo.Invoices', 'U') IS NULL
@@ -2433,6 +2555,289 @@ app.get('/api/analytics/maintenance', async (req, res) => {
     });
   } catch (err) {
     console.error('Maintenance analytics error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+// Payment endpoints
+app.post('/api/payments/initiate', async (req, res) => {
+  try {
+    const { invoiceId, studentId, amount, method = 'BKASH' } = req.body;
+
+    console.log('🔵 [PAYMENT INITIATE] Received request:', { invoiceId, studentId, amount, method });
+
+    if (!invoiceId || !studentId || !amount) {
+      console.error('❌ [PAYMENT INITIATE] Missing required fields');
+      return res.status(400).json({ message: 'invoiceId, studentId, and amount are required' });
+    }
+
+    // Validate invoice exists and belongs to student
+    console.log('🔍 [PAYMENT INITIATE] Verifying invoice ownership...');
+    const invoice = await query('SELECT * FROM Invoices WHERE id = ? AND studentId = ?', [invoiceId, studentId]);
+    if (!invoice || invoice.length === 0) {
+      console.error('❌ [PAYMENT INITIATE] Invoice not found:', { invoiceId, studentId });
+      return res.status(404).json({ message: 'Invoice not found or does not belong to student' });
+    }
+
+    console.log('✅ [PAYMENT INITIATE] Invoice found:', invoice[0]);
+
+    // Check if amount matches
+    if (parseFloat(invoice[0].amount) !== parseFloat(amount)) {
+      console.error('❌ [PAYMENT INITIATE] Amount mismatch:', { expected: invoice[0].amount, received: amount });
+      return res.status(400).json({ message: 'Payment amount does not match invoice amount' });
+    }
+
+    // Check for existing pending payment
+    console.log('🔍 [PAYMENT INITIATE] Checking for existing pending payment...');
+    const existingPending = await query('SELECT * FROM Payments WHERE invoiceId = ? AND status = ?', [invoiceId, 'PENDING']);
+    if (existingPending && existingPending.length > 0) {
+      console.error('❌ [PAYMENT INITIATE] Payment already pending for this invoice');
+      return res.status(400).json({ message: 'Payment already initiated for this invoice' });
+    }
+
+    // Generate transaction ID
+    const transactionId = `TXN_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+    console.log('🆔 [PAYMENT INITIATE] Generated transaction ID:', transactionId);
+
+    // Create payment record
+    console.log('💾 [PAYMENT INITIATE] Creating payment record in database...');
+    await query(
+      'INSERT INTO Payments (invoiceId, studentId, amount, paymentDate, method, status, transaction_id, created_at) VALUES (?, ?, ?, GETDATE(), ?, ?, ?, GETDATE())',
+      [invoiceId, studentId, amount, method, 'PENDING', transactionId]
+    );
+
+    console.log('✅ [PAYMENT INITIATE] Payment record created successfully');
+
+    const returnUrl = `${BACKEND_BASE_URL}/api/payments/callback/redirect`;
+    console.log('📤 [PAYMENT INITIATE] Generating redirect URL for provider:', method, 'callbackUrl:', returnUrl);
+
+    let redirectUrl;
+    try {
+      redirectUrl = await getPaymentProviderRedirectUrl({ method, transactionId, amount, invoiceId, studentId, returnUrl });
+      if (!redirectUrl) {
+        throw new Error('Payment provider did not return a redirect URL');
+      }
+    } catch (providerError) {
+      console.error('❌ [PAYMENT INITIATE] External provider integration failed:', providerError);
+      await query('UPDATE Payments SET status = ? WHERE transaction_id = ?', ['FAILED', transactionId]);
+      return res.status(502).json({ message: 'Payment provider initialization failed' });
+    }
+
+    console.log('✅ [PAYMENT INITIATE] Success:', { transactionId, redirectUrl });
+
+    res.json({
+      transactionId,
+      redirectUrl,
+      amount,
+      method,
+      message: 'Payment initiated successfully'
+    });
+  } catch (err) {
+    console.error('❌ [PAYMENT INITIATE] Server error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  }
+});
+
+app.all('/api/payments/callback/redirect', async (req, res) => {
+  try {
+    const payload = req.method === 'GET' ? req.query : req.body;
+    const transactionId = payload.transaction_id || payload.transactionId || payload.invoiceNumber || payload.merchantInvoiceNumber;
+    const rawStatus = (payload.status || payload.result || payload.paymentStatus || '').toString().toUpperCase();
+    const reference = payload.reference || payload.paymentId || payload.tranId || payload.transaction_id || '';
+
+    console.log('🔵 [PAYMENT REDIRECT CALLBACK] Received redirect callback:', { payload });
+
+    if (!transactionId) {
+      console.error('❌ [PAYMENT REDIRECT CALLBACK] Missing transaction_id');
+      return res.status(400).send('transaction_id is required');
+    }
+
+    const payment = await query('SELECT * FROM Payments WHERE transaction_id = ?', [transactionId]);
+    if (!payment || payment.length === 0) {
+      console.error('❌ [PAYMENT REDIRECT CALLBACK] Payment not found:', transactionId);
+      return res.status(404).send('Payment not found');
+    }
+
+    const existingPayment = payment[0];
+    let newStatus = 'FAILED';
+    if (rawStatus.includes('SUCCESS') || rawStatus.includes('PAID') || rawStatus.includes('COMPLETED') || rawStatus === '1' || rawStatus === 'OK') {
+      newStatus = 'SUCCESS';
+    } else if (rawStatus.includes('PENDING')) {
+      newStatus = 'PENDING';
+    }
+
+    console.log('💾 [PAYMENT REDIRECT CALLBACK] Updating payment status:', { transactionId, newStatus, reference });
+    await query('UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?', [newStatus, reference || '', transactionId]);
+
+    if (newStatus === 'SUCCESS' && existingPayment.invoiceId) {
+      await query('UPDATE Invoices SET status = ? WHERE id = ?', ['PAID', existingPayment.invoiceId]);
+    }
+
+    const redirectAfter = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}`;
+    return res.redirect(302, redirectAfter);
+  } catch (err) {
+    console.error('❌ [PAYMENT REDIRECT CALLBACK] Server error:', err);
+    res.status(500).send('Internal server error');
+  }
+});
+
+app.post('/api/payments/callback/success', async (req, res) => {
+  try {
+    const { transaction_id, reference, status } = req.body;
+
+    console.log('🔵 [PAYMENT SUCCESS] Received callback:', { transaction_id, reference, status });
+
+    if (!transaction_id) {
+      console.error('❌ [PAYMENT SUCCESS] Missing transaction_id');
+      return res.status(400).json({ message: 'transaction_id is required' });
+    }
+
+    // Find payment
+    console.log('🔍 [PAYMENT SUCCESS] Looking for pending payment:', transaction_id);
+    const payment = await query('SELECT * FROM Payments WHERE transaction_id = ? AND status = ?', [transaction_id, 'PENDING']);
+    if (!payment || payment.length === 0) {
+      console.error('❌ [PAYMENT SUCCESS] Payment not found or already processed:', transaction_id);
+      return res.status(404).json({ message: 'Payment not found or already processed' });
+    }
+
+    console.log('✅ [PAYMENT SUCCESS] Payment found:', payment[0]);
+
+    // Update payment
+    console.log('💾 [PAYMENT SUCCESS] Updating payment to SUCCESS status...');
+    await query(
+      'UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?',
+      ['SUCCESS', reference || '', transaction_id]
+    );
+
+    // Update invoice status if fully paid
+    const invoiceId = payment[0].invoiceId;
+    if (invoiceId) {
+      console.log('💾 [PAYMENT SUCCESS] Updating invoice status to PAID:', invoiceId);
+      await query('UPDATE Invoices SET status = ? WHERE id = ?', ['PAID', invoiceId]);
+      console.log('✅ [PAYMENT SUCCESS] Invoice updated:', invoiceId);
+    }
+
+    console.log('✅ [PAYMENT SUCCESS] Payment processed successfully:', transaction_id);
+
+    res.json({ message: 'Payment processed successfully' });
+  } catch (err) {
+    console.error('❌ [PAYMENT SUCCESS] Server error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  }
+});
+
+app.post('/api/payments/callback/failure', async (req, res) => {
+  try {
+    const { transaction_id, reason } = req.body;
+
+    console.log('🔵 [PAYMENT FAILURE] Received callback:', { transaction_id, reason });
+
+    if (!transaction_id) {
+      console.error('❌ [PAYMENT FAILURE] Missing transaction_id');
+      return res.status(400).json({ message: 'transaction_id is required' });
+    }
+
+    // Find payment
+    console.log('🔍 [PAYMENT FAILURE] Looking for pending payment:', transaction_id);
+    const payment = await query('SELECT * FROM Payments WHERE transaction_id = ? AND status = ?', [transaction_id, 'PENDING']);
+    if (!payment || payment.length === 0) {
+      console.error('❌ [PAYMENT FAILURE] Payment not found or already processed:', transaction_id);
+      return res.status(404).json({ message: 'Payment not found or already processed' });
+    }
+
+    console.log('✅ [PAYMENT FAILURE] Payment found:', payment[0]);
+
+    // Update payment
+    console.log('💾 [PAYMENT FAILURE] Updating payment to FAILED status...');
+    await query('UPDATE Payments SET status = ? WHERE transaction_id = ?', ['FAILED', transaction_id]);
+
+    console.log('✅ [PAYMENT FAILURE] Payment failure recorded:', { transaction_id, reason });
+
+    res.json({ message: 'Payment failure recorded' });
+  } catch (err) {
+    console.error('❌ [PAYMENT FAILURE] Server error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  }
+});
+
+app.get('/api/payments/status/:transactionId', async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    if (!transactionId) {
+      return res.status(400).json({ message: 'transactionId is required' });
+    }
+
+    const payment = await query('SELECT * FROM Payments WHERE transaction_id = ?', [transactionId]);
+    if (!payment || payment.length === 0) {
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+
+    const record = payment[0];
+    res.json({
+      transactionId: record.transaction_id,
+      invoiceId: record.invoiceId,
+      amount: record.amount,
+      method: record.method,
+      status: record.status,
+      reference: record.reference || null,
+      createdAt: record.created_at,
+    });
+  } catch (err) {
+    console.error('❌ [PAYMENT STATUS] Server error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  }
+});
+
+app.get('/api/payments', async (req, res) => {
+  try {
+    const { status, studentId } = req.query;
+    let sql = `
+      SELECT p.*, s.name as studentName, s.email as studentEmail, i.description as invoiceDescription
+      FROM Payments p
+      LEFT JOIN Students s ON p.studentId = s.id
+      LEFT JOIN Invoices i ON p.invoiceId = i.id
+    `;
+    const params = [];
+
+    if (status) {
+      sql += ' WHERE p.status = ?';
+      params.push(status);
+    }
+
+    if (studentId) {
+      sql += status ? ' AND' : ' WHERE';
+      sql += ' p.studentId = ?';
+      params.push(studentId);
+    }
+
+    sql += ' ORDER BY p.created_at DESC';
+
+    const result = await query(sql, params);
+    res.json(result);
+  } catch (err) {
+    console.error('Get payments error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/payments/:id', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const result = await query(`
+      SELECT p.*, s.name as studentName, s.email as studentEmail, i.description as invoiceDescription
+      FROM Payments p
+      LEFT JOIN Students s ON p.studentId = s.id
+      LEFT JOIN Invoices i ON p.invoiceId = i.id
+      WHERE p.id = ?
+    `, [id]);
+
+    if (!result || result.length === 0) {
+      return res.status(404).json({ message: 'Payment not found' });
+    }
+
+    res.json(result[0]);
+  } catch (err) {
+    console.error('Get payment error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
