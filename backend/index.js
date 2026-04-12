@@ -301,6 +301,41 @@ async function getActiveAllocationForStudent(studentId) {
   return result && result.length > 0 ? result[0] : null;
 }
 
+async function getNextRegistrationNumber() {
+  const result = await query(`
+    SELECT ISNULL(
+      MAX(
+        TRY_CAST(
+          CASE
+            WHEN UPPER(registrationNumber) LIKE 'REG%'
+              AND PATINDEX('%[0-9]%', registrationNumber) > 0
+            THEN SUBSTRING(registrationNumber, PATINDEX('%[0-9]%', registrationNumber), LEN(registrationNumber))
+            ELSE NULL
+          END AS INT
+        )
+      ),
+      0
+    ) AS maxReg
+    FROM Students WITH (UPDLOCK, HOLDLOCK)
+  `);
+
+  const maxReg = Number(result?.[0]?.maxReg || 0);
+  return `REG-${maxReg + 1}`;
+}
+
+async function normalizeStudentRegistrationNumbers() {
+  await query(`
+    ;WITH OrderedStudents AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY id ASC) AS rn
+      FROM Students
+    )
+    UPDATE s
+    SET registrationNumber = CONCAT('REG-', os.rn)
+    FROM Students s
+    INNER JOIN OrderedStudents os ON os.id = s.id
+  `);
+}
+
 async function ensureBedsForRoom(roomId, capacity) {
   const existingBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ?', [roomId]);
   const existingCount = Number(existingBeds?.[0]?.count || 0);
@@ -582,6 +617,32 @@ async function ensureFeatureTables() {
     END
   `)
 
+  // One-time-safe normalization so existing mixed/manual values become sequential REG-1..REG-n.
+  // This updates Students only and does not delete users or break table relationships.
+  await normalizeStudentRegistrationNumbers()
+
+  await query(`
+    IF OBJECT_ID('dbo.Students', 'U') IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM sys.indexes
+         WHERE name = 'UX_Students_RegistrationNumber'
+           AND object_id = OBJECT_ID('dbo.Students')
+       )
+       AND NOT EXISTS (
+         SELECT registrationNumber
+         FROM dbo.Students
+         WHERE registrationNumber IS NOT NULL AND registrationNumber <> ''
+         GROUP BY registrationNumber
+         HAVING COUNT(*) > 1
+       )
+    BEGIN
+      CREATE UNIQUE INDEX UX_Students_RegistrationNumber
+      ON dbo.Students(registrationNumber)
+      WHERE registrationNumber IS NOT NULL AND registrationNumber <> ''
+    END
+  `)
+
   await query(
     `IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE email = ?)
      BEGIN
@@ -635,15 +696,23 @@ app.post('/api/auth/signup', async (req, res) => {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    // Insert user
-    await query('INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)', [name, email, password, role, role === 'STUDENT' ? null : 1]);
-
-    // Add to respective tables
     if (role === 'STUDENT') {
-      await query(
-        'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [name, email, extra.phone || '', extra.registrationNumber || '', extra.department || '', extra.yearOfStudy || 1, 'ACTIVE', password]
-      );
+      await query('BEGIN TRANSACTION');
+      try {
+        await query('INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)', [name, email, password, role, null]);
+        const registrationNumber = await getNextRegistrationNumber();
+        await query(
+          'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+          [name, email, extra.phone || '', registrationNumber, extra.department || '', extra.yearOfStudy || 1, 'ACTIVE', password]
+        );
+        await query('COMMIT TRANSACTION');
+      } catch (createErr) {
+        await query('ROLLBACK TRANSACTION');
+        throw createErr;
+      }
+    } else {
+      // Insert non-student user directly
+      await query('INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)', [name, email, password, role, 1]);
     }
 
     res.status(201).json({ token: `token-${Date.now()}`, user: { name, email, role } });
@@ -751,10 +820,20 @@ app.post('/api/students', async (req, res) => {
   try {
     const payload = req.body;
     const yearOfStudy = toIntOrDefault(payload.yearOfStudy, 1);
-    await query(
-      'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [payload.name, payload.email, payload.phone || '', payload.registrationNumber || '', payload.department || '', yearOfStudy, payload.status || 'ACTIVE', payload.password || 'password']
-    );
+
+    await query('BEGIN TRANSACTION');
+    try {
+      const registrationNumber = await getNextRegistrationNumber();
+      await query(
+        'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        [payload.name, payload.email, payload.phone || '', registrationNumber, payload.department || '', yearOfStudy, payload.status || 'ACTIVE', payload.password || 'password']
+      );
+      await query('COMMIT TRANSACTION');
+    } catch (createErr) {
+      await query('ROLLBACK TRANSACTION');
+      throw createErr;
+    }
+
     const insertedStudent = await query('SELECT TOP 1 * FROM Students WHERE email = ? ORDER BY id DESC', [payload.email]);
     res.status(201).json({ ...(insertedStudent && insertedStudent[0] ? insertedStudent[0] : payload), yearOfStudy });
   } catch (err) {
@@ -770,13 +849,12 @@ app.put('/api/students/:id', async (req, res) => {
     const yearOfStudy = toIntOrDefault(payload.yearOfStudy, 1);
     await query(
       `UPDATE Students
-       SET name = ?, email = ?, phone = ?, registrationNumber = ?, department = ?, yearOfStudy = ?, status = ?, password = ?
+       SET name = ?, email = ?, phone = ?, department = ?, yearOfStudy = ?, status = ?, password = ?
        WHERE id = ?`,
       [
         payload.name,
         payload.email,
         payload.phone || '',
-        payload.registrationNumber || '',
         payload.department || '',
         yearOfStudy,
         payload.status || 'ACTIVE',
@@ -2128,13 +2206,15 @@ app.post('/api/allocations', async (req, res) => {
             );
           }
 
+          const registrationNumber = await getNextRegistrationNumber();
+
           await query(
             'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
             [
               studentData.name,
               studentEmail,
               studentData.phone || '',
-              studentData.registrationNumber || '',
+              registrationNumber,
               studentData.department || '',
               toIntOrDefault(studentData.yearOfStudy, 1),
               'ACTIVE',
@@ -2449,8 +2529,8 @@ app.get('/api/analytics/students', async (req, res) => {
     const registrationYearQuery = `
       SELECT
         CASE
-          WHEN LEN(registrationNumber) >= 4 AND ISNUMERIC(LEFT(registrationNumber, 4)) = 1
-          THEN LEFT(registrationNumber, 4)
+          WHEN PATINDEX('%[0-9]%', registrationNumber) > 0
+          THEN CAST(TRY_CAST(SUBSTRING(registrationNumber, PATINDEX('%[0-9]%', registrationNumber), LEN(registrationNumber)) AS INT) AS NVARCHAR(20))
           ELSE 'Unknown'
         END as registration_year,
         COUNT(*) as count
@@ -2458,11 +2538,11 @@ app.get('/api/analytics/students', async (req, res) => {
       WHERE registrationNumber IS NOT NULL AND registrationNumber != ''
       GROUP BY
         CASE
-          WHEN LEN(registrationNumber) >= 4 AND ISNUMERIC(LEFT(registrationNumber, 4)) = 1
-          THEN LEFT(registrationNumber, 4)
+          WHEN PATINDEX('%[0-9]%', registrationNumber) > 0
+          THEN CAST(TRY_CAST(SUBSTRING(registrationNumber, PATINDEX('%[0-9]%', registrationNumber), LEN(registrationNumber)) AS INT) AS NVARCHAR(20))
           ELSE 'Unknown'
         END
-      ORDER BY registration_year DESC
+      ORDER BY TRY_CAST(registration_year AS INT) DESC
     `;
     const registrationYearResult = await query(registrationYearQuery);
 

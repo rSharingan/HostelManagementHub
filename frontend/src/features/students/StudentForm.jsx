@@ -11,7 +11,6 @@ const studentSchema = z.object({
   name: z.string().min(2, 'Name must be at least 2 characters'),
   email: z.string().email('Invalid email address'),
   phone: z.string().min(10, 'Phone must be at least 10 digits'),
-  registrationNumber: z.string().min(1, 'Registration number is required'),
   department: z.string().min(1, 'Department is required'),
   yearOfStudy: z.string().min(1, 'Year of study is required'),
 })
@@ -65,12 +64,6 @@ export const StudentForm = ({ student, onSubmit, loading, onCancel }) => {
               placeholder="+1 234 567 8900"
               {...register('phone')}
               error={errors.phone?.message}
-            />
-            <Input
-              label="Registration Number"
-              placeholder="REG-2024-001"
-              {...register('registrationNumber')}
-              error={errors.registrationNumber?.message}
             />
           </div>
 

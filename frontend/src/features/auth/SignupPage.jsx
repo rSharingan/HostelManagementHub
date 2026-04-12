@@ -12,7 +12,6 @@ export const SignupPage = () => {
     email: '',
     password: '',
     role: '',
-    registrationNumber: '',
     department: '',
     yearOfStudy: ''
   })
@@ -98,15 +97,6 @@ export const SignupPage = () => {
 
               {formData.role === 'STUDENT' && (
                 <div className="space-y-4 animate-slide-in-left">
-                  <Input
-                    label="Registration Number"
-                    type="text"
-                    placeholder="REG-001"
-                    value={formData.registrationNumber}
-                    onChange={(e) => handleChange('registrationNumber', e.target.value)}
-                    required
-                  />
-
                   <Input
                     label="Department"
                     type="text"
