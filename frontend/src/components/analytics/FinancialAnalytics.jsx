@@ -2,13 +2,16 @@
 import { useState, useEffect } from 'react'
 import { Card, CardContent, CardHeader, CardTitle } from '../ui/Card'
 import { AnalyticsPieChart } from './PieChart'
+import { PremiumUpgrade } from '../common/PremiumUpgrade'
 import axios from '../../lib/api/axios'
 import { API_ENDPOINTS } from '../../lib/api/endpoints'
+import { usePremiumStatus } from '../../features/auth/hooks'
 import { DollarSign, CreditCard, TrendingUp, AlertTriangle } from 'lucide-react'
 
 export const FinancialAnalytics = () => {
   const [data, setData] = useState(null)
   const [loading, setLoading] = useState(true)
+  const { data: premiumData, isLoading: premiumLoading } = usePremiumStatus()
 
   useEffect(() => {
     const fetchData = async () => {
@@ -24,6 +27,30 @@ export const FinancialAnalytics = () => {
 
     fetchData()
   }, [])
+
+  if (premiumLoading) {
+    return <div>Loading...</div>
+  }
+
+  if (!premiumData?.isPremium) {
+    return (
+      <div className="flex justify-center items-center min-h-[400px]">
+        <PremiumUpgrade
+          type="premium"
+          amount={9.99}
+          title="Unlock Premium Analytics"
+          description="Get advanced financial insights and detailed reports"
+          features={[
+            "Advanced financial charts and graphs",
+            "Detailed revenue breakdowns",
+            "Outstanding dues analysis",
+            "Monthly trend reports",
+            "Export capabilities",
+          ]}
+        />
+      </div>
+    )
+  }
 
   if (loading) {
     return (

@@ -1,6 +1,8 @@
 // path: src/features/fees/PaymentsPage.jsx
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { PageHeader } from '../../components/common/PageHeader'
+import { ConfirmDialog } from '../../components/common/ConfirmDialog'
 import { Card, CardContent, CardHeader } from '../../components/ui/Card'
 import { DataTable } from '../../components/common/DataTable'
 import { CountdownTimer } from '../../components/common/CountdownTimer'
@@ -13,10 +15,12 @@ import { useAuth } from '../auth/hooks'
 
 export const PaymentsPage = () => {
   const { user } = useAuth()
+  const navigate = useNavigate()
   const { data = [], isLoading } = usePayments()
   const { data: rentStatus } = useRentStatus({ studentEmail: user?.email }, user?.role === 'STUDENT')
   const createPayment = useCreatePayment()
   const payRent = usePayRent()
+  const [isPaymentDialogOpen, setIsPaymentDialogOpen] = useState(false)
   const [form, setForm] = useState({
     invoiceId: '',
     studentId: '',
@@ -48,7 +52,9 @@ export const PaymentsPage = () => {
         studentEmail: user?.email,
         method: 'CARD',
       })
+      setIsPaymentDialogOpen(false)
       toast.success('Rent payment completed')
+      navigate('/fees/payments')
     } catch (error) {
       toast.error(error.response?.data?.message || 'Unable to complete rent payment')
     }
@@ -176,12 +182,29 @@ export const PaymentsPage = () => {
                   <p className="text-sm text-green-600 dark:text-green-400">Consecutive payment months: {rentStatus.consecutiveMonths || 0}</p>
                   <p className="text-sm text-cyan-600 dark:text-cyan-300">Next cycle: {rentStatus.nextCycleToPay}</p>
                   <Button
-                    onClick={handleStudentRentPayment}
+                    onClick={() => setIsPaymentDialogOpen(true)}
                     disabled={!rentStatus.canPayNow || payRent.isPending}
                     className="w-full"
                   >
                     {payRent.isPending ? 'Processing...' : rentStatus.canPayNow ? 'Pay Current Rent' : 'Payment Locked'}
                   </Button>
+                <ConfirmDialog
+                  open={isPaymentDialogOpen}
+                  onOpenChange={setIsPaymentDialogOpen}
+                  title="Pay Current Rent"
+                  description={
+                    <div className="space-y-3 text-sm text-gray-700 dark:text-dark-300">
+                      <p>Your current rent amount will be charged using the saved card payment method.</p>
+                      <p className="font-semibold">Payment method: CARD</p>
+                      <p>If you confirm, payment will be processed and you will be redirected to the transaction history page.</p>
+                    </div>
+                  }
+                  confirmLabel={payRent.isPending ? 'Processing...' : 'Pay with Card'}
+                  cancelLabel="Cancel"
+                  onConfirm={handleStudentRentPayment}
+                  loading={payRent.isPending}
+                  variant="primary"
+                />
                 </div>
               </div>
             )}

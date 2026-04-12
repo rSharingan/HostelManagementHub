@@ -1,5 +1,6 @@
 // path: src/features/dashboard/DashboardPage.jsx
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Users, Home, DollarSign, AlertCircle, Wrench, CheckCircle } from 'lucide-react'
 import { useAuth } from '../auth/hooks'
 import { PageHeader } from '../../components/common/PageHeader'
@@ -22,6 +23,7 @@ export const DashboardPage = () => {
   const [users, setUsers] = useState([])
   const [rentStatus, setRentStatus] = useState(null)
   const [isPayingRent, setIsPayingRent] = useState(false)
+  const navigate = useNavigate()
   const currentStudent = user?.role === 'STUDENT'
     ? students.find((student) => student.email === user.email)
     : null
@@ -557,15 +559,21 @@ export const DashboardPage = () => {
                 <p className="mt-2 text-sm text-amber-600">
                   {rentStatus?.canPayNow
                     ? `Payment window is open. Pending cycles: ${rentStatus.pendingCycles}`
-                    : `Reminder: rent becomes payable on day 31. You are on day ${rentStatus.daysUsed}.`}
+                    : `Next payment window opens in ${rentStatus.daysUntilPaymentDue} day${rentStatus.daysUntilPaymentDue !== 1 ? 's' : ''}.`}
                 </p>
               )}
               <Button
                 className="mt-4"
-                disabled={!rentStatus?.canPayNow || isPayingRent}
-                onClick={handlePayRent}
+                disabled={isPayingRent}
+                onClick={() => {
+                  if (rentStatus?.canPayNow) {
+                    handlePayRent()
+                  } else {
+                    navigate('/fees/payments')
+                  }
+                }}
               >
-                {isPayingRent ? 'Processing...' : rentStatus?.canPayNow ? 'Pay Rent' : 'Payment Locked'}
+                {isPayingRent ? 'Processing...' : rentStatus?.canPayNow ? 'Pay Rent' : 'View Rent Transactions'}
               </Button>
             </div>
           </CardContent>
@@ -654,6 +662,7 @@ export const DashboardPage = () => {
       setPayments(paymentsRes.data)
       setRentStatus(rentStatusRes.data)
       toast.success('Rent paid successfully')
+      navigate('/fees/payments')
     } catch (error) {
       toast.error(error.response?.data?.message || 'Failed to process rent payment')
     } finally {

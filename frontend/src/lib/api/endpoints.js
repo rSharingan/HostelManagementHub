@@ -72,6 +72,18 @@ export const API_ENDPOINTS = {
   USERS: {
     LIST: '/users',
   },
+  USER: {
+    STATUS: '/user/status',
+  },
+  STRIPE: {
+    CHECKOUT: '/stripe/checkout',
+  },
+  CONSULTANCY: {
+    LIST: '/consultancy',
+    CREATE: '/consultancy',
+    UPDATE: (id) => `/consultancy/${id}`,
+    DELETE: (id) => `/consultancy/${id}`,
+  },
   REPORTS: {
     OCCUPANCY: '/reports/occupancy',
     DUES: '/reports/dues',

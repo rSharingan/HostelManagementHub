@@ -23,6 +23,7 @@ import { OccupancyReportPage } from '../features/reports/OccupancyReportPage'
 import { DuesReportPage } from '../features/reports/DuesReportPage'
 import { MaintenanceReportPage } from '../features/reports/MaintenanceReportPage'
 import { ProfilePage } from '../features/settings/ProfilePage'
+import { ConsultancyPage } from '../features/consultancy/ConsultancyPage'
 
 export const router = createBrowserRouter([
   {
@@ -193,6 +194,16 @@ export const router = createBrowserRouter([
       <RequireAuth>
         <AppLayout>
           <MaintenanceReportPage />
+        </AppLayout>
+      </RequireAuth>
+    ),
+  },
+  {
+    path: '/consultancy',
+    element: (
+      <RequireAuth>
+        <AppLayout>
+          <ConsultancyPage />
         </AppLayout>
       </RequireAuth>
     ),
