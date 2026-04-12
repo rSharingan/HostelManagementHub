@@ -44,6 +44,23 @@ export const updatePaymentAPI = async (id, payment) => {
   return data
 }
 
+export const initiatePaymentAPI = async (paymentData) => {
+  try {
+    console.log('🔵 [API] Initiating payment request with data:', paymentData)
+    
+    if (!paymentData.invoiceId || !paymentData.studentId || !paymentData.amount) {
+      throw new Error('Missing required fields: invoiceId, studentId, or amount')
+    }
+
+    const { data } = await axios.post('/payments/initiate', paymentData)
+    console.log('✅ [API] Payment initiation successful. Transaction ID:', data.transactionId)
+    return data
+  } catch (error) {
+    console.error('❌ [API] Payment initiation failed:', error)
+    throw error
+  }
+}
+
 export const getRentStatusAPI = async (params = {}) => {
   const { data } = await axios.get(API_ENDPOINTS.FEES.RENT_STATUS, { params })
   return data

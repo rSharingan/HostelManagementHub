@@ -9,6 +9,7 @@ import {
   getPaymentAPI,
   createPaymentAPI,
   updatePaymentAPI,
+  initiatePaymentAPI,
   getRentStatusAPI,
   payRentAPI,
 } from './api'
@@ -84,6 +85,17 @@ export const useUpdatePayment = () => {
   return useMutation({
     mutationFn: ({ id, data }) => updatePaymentAPI(id, data),
     onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: PAYMENTS_QUERY_KEY })
+    },
+  })
+}
+
+export const useInitiatePayment = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: initiatePaymentAPI,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: INVOICES_QUERY_KEY })
       queryClient.invalidateQueries({ queryKey: PAYMENTS_QUERY_KEY })
     },
   })

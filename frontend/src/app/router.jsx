@@ -23,6 +23,7 @@ import { OccupancyReportPage } from '../features/reports/OccupancyReportPage'
 import { DuesReportPage } from '../features/reports/DuesReportPage'
 import { MaintenanceReportPage } from '../features/reports/MaintenanceReportPage'
 import { ProfilePage } from '../features/settings/ProfilePage'
+import { PaymentProcessPage } from '../features/fees/PaymentProcessPage'
 
 export const router = createBrowserRouter([
   {
@@ -32,6 +33,10 @@ export const router = createBrowserRouter([
   {
     path: '/signup',
     element: <SignupPage />,
+  },
+  {
+    path: '/payment/process',
+    element: <PaymentProcessPage />,
   },
   {
     path: '/',
