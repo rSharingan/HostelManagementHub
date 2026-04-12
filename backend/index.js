@@ -8,6 +8,17 @@ const PORT = process.env.PORT || 5000;
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || 'http://localhost:5173';
 const BACKEND_BASE_URL = process.env.BACKEND_BASE_URL || `http://localhost:${PORT}`;
 const CARETAKER_FIXED_SALARY = Number(process.env.CARETAKER_FIXED_SALARY || 12000);
+const ROOM_CHANGE_MIN_DAYS = 31;
+const SHARED_BASE_RENT = Number(process.env.SHARED_BASE_RENT || 2000);
+const SINGLE_BASE_RENT = Number(process.env.SINGLE_BASE_RENT || 4000);
+const INITIAL_BALANCE_DEFAULT = Number(process.env.INITIAL_BALANCE_DEFAULT || 10000);
+const INITIAL_BALANCE_ADMIN = Number(process.env.INITIAL_BALANCE_ADMIN || 100000);
+const ROOM_ATTRIBUTE_SURCHARGES = {
+  hasAC: Number(process.env.RENT_AC_SURCHARGE || 1200),
+  hasWifi: Number(process.env.RENT_WIFI_SURCHARGE || 300),
+  hasBalcony: Number(process.env.RENT_BALCONY_SURCHARGE || 500),
+  hasAttachedBathroom: Number(process.env.RENT_ATTACHED_BATH_SURCHARGE || 800),
+};
 
 const BKASH_SANDBOX_BASE_URL = process.env.BKASH_SANDBOX_BASE_URL || 'https://checkout.sandbox.bka.sh/v1.2.0-beta';
 const BKASH_SANDBOX_TOKEN_URL = process.env.BKASH_SANDBOX_TOKEN_URL || `${BKASH_SANDBOX_BASE_URL}/tokenized/checkout/token/grant?grant_type=client_credentials`;
@@ -326,15 +337,97 @@ async function getActiveAllocationForStudent(studentId) {
   }
 
   const result = await query(
-    `SELECT TOP 1 a.*, r.roomNumber, r.rentalCost, r.id AS resolvedRoomId
+    `SELECT TOP 1 a.*, r.roomNumber, r.rentalCost, r.id AS resolvedRoomId,
+            b.bedNumber
      FROM Allocations a
      LEFT JOIN Rooms r ON a.roomId = r.id
+     LEFT JOIN Beds b ON a.bedId = b.id
      WHERE a.studentId = ? AND a.status = 'ACTIVE'
      ORDER BY a.checkInDate DESC, a.id DESC`,
     [studentId]
   );
 
   return result && result.length > 0 ? result[0] : null;
+}
+
+async function getRoomChangeEligibility(studentId, allocation = null) {
+  const activeAllocation = allocation || await getActiveAllocationForStudent(studentId);
+  if (!activeAllocation) {
+    return {
+      hasActiveAllocation: false,
+      canRequestRoomChange: true,
+      daysUsed: 0,
+      daysUntilRoomChangeAllowed: 0,
+      roomChangeEligibleAt: null,
+    };
+  }
+
+  const daysRow = await query('SELECT DATEDIFF(day, ?, GETDATE()) AS daysUsed', [activeAllocation.checkInDate]);
+  const daysUsed = Math.max(0, Number(daysRow?.[0]?.daysUsed || 0));
+  const daysUntilRoomChangeAllowed = Math.max(0, ROOM_CHANGE_MIN_DAYS - daysUsed);
+  const roomChangeEligibleAt = new Date(activeAllocation.checkInDate);
+  roomChangeEligibleAt.setDate(roomChangeEligibleAt.getDate() + ROOM_CHANGE_MIN_DAYS);
+
+  return {
+    hasActiveAllocation: true,
+    canRequestRoomChange: daysUntilRoomChangeAllowed === 0,
+    daysUsed,
+    daysUntilRoomChangeAllowed,
+    roomChangeEligibleAt,
+  };
+}
+
+function normalizeRoomType(type) {
+  const normalized = String(type || '').trim().toUpperCase();
+  if (!normalized) {
+    return 'SHARED';
+  }
+  if (['SINGLE', 'PRIVATE'].includes(normalized)) {
+    return 'SINGLE';
+  }
+  return 'SHARED';
+}
+
+function calculateRoomRentFromAttributes({ type, hasAC, hasWifi, hasBalcony, hasAttachedBathroom }) {
+  const roomType = normalizeRoomType(type);
+  let rent = roomType === 'SINGLE' ? SINGLE_BASE_RENT : SHARED_BASE_RENT;
+  if (toBit(hasAC, 0) === 1) rent += ROOM_ATTRIBUTE_SURCHARGES.hasAC;
+  if (toBit(hasWifi, 0) === 1) rent += ROOM_ATTRIBUTE_SURCHARGES.hasWifi;
+  if (toBit(hasBalcony, 0) === 1) rent += ROOM_ATTRIBUTE_SURCHARGES.hasBalcony;
+  if (toBit(hasAttachedBathroom, 0) === 1) rent += ROOM_ATTRIBUTE_SURCHARGES.hasAttachedBathroom;
+  return rent;
+}
+
+function getInitialBalanceByRole(role) {
+  return String(role || '').toUpperCase() === 'ADMIN' ? INITIAL_BALANCE_ADMIN : INITIAL_BALANCE_DEFAULT;
+}
+
+async function getReservedSeatCountForRoom(roomId, excludeRequestId = null) {
+  let sqlText = `
+    SELECT COUNT(*) AS count
+    FROM RoomRequests
+    WHERE roomId = ?
+      AND status IN ('PENDING', 'APPROVED_WAITING_SHIFT')`;
+  const params = [roomId];
+
+  if (excludeRequestId !== null && excludeRequestId !== undefined) {
+    sqlText += ' AND id <> ?';
+    params.push(excludeRequestId);
+  }
+
+  const rows = await query(sqlText, params);
+  return Math.max(0, Number(rows?.[0]?.count || 0));
+}
+
+async function recalculateRoomRents() {
+  const rooms = await query('SELECT id, type, hasAC, hasWifi, hasBalcony, hasAttachedBathroom, rentalCost FROM Rooms');
+  for (const room of rooms || []) {
+    const computedRent = calculateRoomRentFromAttributes(room);
+    const currentRent = Number(room.rentalCost || 0);
+    if (currentRent !== computedRent) {
+      await query('UPDATE Rooms SET rentalCost = ? WHERE id = ?', [computedRent, room.id]);
+    }
+  }
 }
 
 async function getNextRegistrationNumber() {
@@ -404,12 +497,9 @@ async function syncRoomStatus(roomId) {
 
   const occupiedBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [roomId, 'OCCUPIED']);
   const occupancy = Number(occupiedBeds?.[0]?.count || 0);
-  const newStatus = occupancy >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
+  const reservedSeats = await getReservedSeatCountForRoom(roomId);
+  const newStatus = (occupancy + reservedSeats) >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
   await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
-
-  if (newStatus === 'OCCUPIED') {
-    await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
-  }
 }
 
 async function seedBedsForAllRooms() {
@@ -454,7 +544,7 @@ async function ensureFeatureTables() {
   `)
 
   await ensureColumnExists('Users', 'hostelId', 'hostelId INT NULL')
-  await ensureColumnExists('Users', 'balance', 'balance DECIMAL(12,2) NOT NULL DEFAULT 100000')
+  await ensureColumnExists('Users', 'balance', `balance DECIMAL(12,2) NOT NULL DEFAULT ${INITIAL_BALANCE_DEFAULT}`)
 
   await query(`
     IF NOT EXISTS (
@@ -464,7 +554,8 @@ async function ensureFeatureTables() {
       INNER JOIN sys.tables t ON t.object_id = c.object_id
       WHERE t.name = 'Users'
         AND c.name = 'balance'
-        AND dc.definition LIKE '%100000%'
+        AND dc.definition LIKE '%10000%'
+        AND dc.definition NOT LIKE '%100000%'
     )
     BEGIN
       DECLARE @dcName NVARCHAR(200);
@@ -483,7 +574,7 @@ async function ensureFeatureTables() {
       END
 
       ALTER TABLE dbo.Users
-      ADD CONSTRAINT DF_Users_balance DEFAULT (100000) FOR balance;
+      ADD CONSTRAINT DF_Users_balance DEFAULT (10000) FOR balance;
     END
   `)
 
@@ -816,10 +907,10 @@ async function ensureFeatureTables() {
   await query(
     `IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE email = ?)
      BEGIN
-       INSERT INTO dbo.Users (name, email, password, role)
-       VALUES (?, ?, ?, ?)
+       INSERT INTO dbo.Users (name, email, password, role, balance)
+       VALUES (?, ?, ?, ?, ?)
      END`,
-    ['admin@hostel.com', 'Admin', 'admin@hostel.com', 'password', 'ADMIN']
+    ['admin@hostel.com', 'Admin', 'admin@hostel.com', 'password', 'ADMIN', INITIAL_BALANCE_ADMIN]
   )
 
   await query(`
@@ -840,15 +931,19 @@ async function ensureFeatureTables() {
   `)
 
   await query(`
-    IF NOT EXISTS (SELECT 1 FROM dbo.SchemaMigrations WHERE migrationKey = 'users_balance_100000_initial')
+    IF NOT EXISTS (SELECT 1 FROM dbo.SchemaMigrations WHERE migrationKey = 'users_balance_role_based_2026_04')
     BEGIN
-      UPDATE dbo.Users SET balance = 100000;
-      INSERT INTO dbo.SchemaMigrations (migrationKey) VALUES ('users_balance_100000_initial');
+      UPDATE dbo.Users
+      SET balance = CASE WHEN role = 'ADMIN' THEN 100000 ELSE 10000 END;
+
+      INSERT INTO dbo.SchemaMigrations (migrationKey) VALUES ('users_balance_role_based_2026_04');
     END
   `)
 
   await query(`
-    UPDATE dbo.Users SET balance = 100000 WHERE balance IS NULL
+    UPDATE dbo.Users
+    SET balance = CASE WHEN role = 'ADMIN' THEN 100000 ELSE 10000 END
+    WHERE balance IS NULL
   `)
 
   // Ensure every student has a linked STUDENT user for strict 1:1 User->Student mapping.
@@ -1014,6 +1109,7 @@ async function ensureFeatureTables() {
     END
   `)
 
+  await recalculateRoomRents()
   await seedBedsForAllRooms()
 }
 
@@ -1031,7 +1127,7 @@ app.post('/api/auth/signup', async (req, res) => {
     if (role === 'STUDENT') {
       await query('BEGIN TRANSACTION');
       try {
-        await query('INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)', [name, email, password, role, null]);
+        await query('INSERT INTO Users (name, email, password, role, hostelId, balance) VALUES (?, ?, ?, ?, ?, ?)', [name, email, password, role, null, getInitialBalanceByRole(role)]);
         const insertedUsers = await query('SELECT TOP 1 id FROM Users WHERE email = ? AND role = ? ORDER BY id DESC', [email, 'STUDENT']);
         const linkedUserId = insertedUsers?.[0]?.id || null;
         if (!linkedUserId) {
@@ -1049,11 +1145,11 @@ app.post('/api/auth/signup', async (req, res) => {
       }
     } else {
       // Insert non-student user directly
-      await query('INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)', [name, email, password, role, 1]);
+      await query('INSERT INTO Users (name, email, password, role, hostelId, balance) VALUES (?, ?, ?, ?, ?, ?)', [name, email, password, role, 1, getInitialBalanceByRole(role)]);
     }
 
     const createdUsers = await query('SELECT TOP 1 id, name, email, role, balance FROM Users WHERE email = ? ORDER BY id DESC', [email]);
-    const createdUser = createdUsers?.[0] || { name, email, role, balance: 100000 };
+    const createdUser = createdUsers?.[0] || { name, email, role, balance: getInitialBalanceByRole(role) };
     res.status(201).json({ token: `token-${Date.now()}`, user: { id: createdUser.id, name: createdUser.name, email: createdUser.email, role: createdUser.role, balance: Number(createdUser.balance || 0) } });
   } catch (err) {
     console.error('Signup error:', err);
@@ -1183,8 +1279,8 @@ app.post('/api/students', async (req, res) => {
         linkedUserId = existingUser[0].id;
       } else {
         await query(
-          'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
-          [payload.name, payload.email, payload.password || 'password', 'STUDENT', null]
+          'INSERT INTO Users (name, email, password, role, hostelId, balance) VALUES (?, ?, ?, ?, ?, ?)',
+          [payload.name, payload.email, payload.password || 'password', 'STUDENT', null, getInitialBalanceByRole('STUDENT')]
         );
         const insertedUsers = await query('SELECT TOP 1 id FROM Users WHERE email = ? AND role = ? ORDER BY id DESC', [payload.email, 'STUDENT']);
         linkedUserId = insertedUsers?.[0]?.id || null;
@@ -1301,19 +1397,29 @@ app.get('/api/rooms', async (req, res) => {
     // Get rooms with their allocations. Use a single allocations fetch to avoid concurrent queries on one connection.
     const rooms = await query('SELECT * FROM Rooms');
     const allocationRows = await query(`
-      SELECT a.id, a.studentId, a.roomId, a.checkInDate, a.status as allocationStatus,
+      SELECT a.id, a.studentId, a.roomId, a.bedId, a.checkInDate, a.status as allocationStatus,
              s.name as studentName, s.registrationNumber
+             ,b.bedNumber
       FROM Allocations a
       JOIN Students s ON a.studentId = s.id
+      LEFT JOIN Beds b ON a.bedId = b.id
       WHERE a.status = 'ACTIVE'
     `);
+    const reservedSeatRows = await query(`
+      SELECT roomId, COUNT(*) AS reservedSeats
+      FROM RoomRequests
+      WHERE status IN ('PENDING', 'APPROVED_WAITING_SHIFT')
+      GROUP BY roomId
+    `);
+    const reservedMap = new Map((reservedSeatRows || []).map((row) => [Number(row.roomId), Number(row.reservedSeats || 0)]));
 
     const roomsWithAllocations = [];
     for (const room of rooms) {
       const allocations = allocationRows.filter((a) => a.roomId === room.id);
       const currentOccupancy = allocations.length;
-      const computedStatus = currentOccupancy >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
-      const seatsLeft = Math.max(0, Number(room.capacity || 0) - currentOccupancy);
+      const reservedSeats = Number(reservedMap.get(Number(room.id)) || 0);
+      const computedStatus = (currentOccupancy + reservedSeats) >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
+      const seatsLeft = Math.max(0, Number(room.capacity || 0) - currentOccupancy - reservedSeats);
 
       if (room.status !== computedStatus) {
         await query('UPDATE Rooms SET status = ? WHERE id = ?', [computedStatus, room.id]);
@@ -1323,12 +1429,15 @@ app.get('/api/rooms', async (req, res) => {
         ...room,
         status: computedStatus,
         occupiedSeats: currentOccupancy,
+        reservedSeats,
         seatsLeft,
         allocatedStudents: allocations.map((a) => ({
           id: a.studentId,
           name: a.studentName,
           registrationNumber: a.registrationNumber,
           allocationId: a.id,
+          bedId: a.bedId,
+          bedNumber: a.bedNumber,
           checkInDate: a.checkInDate,
         })),
       });
@@ -1346,13 +1455,21 @@ app.post('/api/rooms', async (req, res) => {
     const payload = req.body;
     const floor = toNullableInt(payload.floor);
     const hostelId = toIntOrDefault(payload.hostelId, 1);
+    const roomType = normalizeRoomType(payload.type);
     const hasAC = toBit(payload.hasAC, 0);
     const hasAttachedBathroom = toBit(payload.hasAttachedBathroom, 0);
     const hasWifi = toBit(payload.hasWifi, 0);
     const hasBalcony = toBit(payload.hasBalcony, 0);
+    const computedRent = calculateRoomRentFromAttributes({
+      type: roomType,
+      hasAC,
+      hasAttachedBathroom,
+      hasWifi,
+      hasBalcony,
+    });
     await query(
       'INSERT INTO Rooms (roomNumber, block, floor, capacity, type, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, rentalCost, status, hostelId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [payload.roomNumber, payload.block, floor, payload.capacity, payload.type, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, payload.rentalCost, payload.status || 'AVAILABLE', hostelId]
+      [payload.roomNumber, payload.block, floor, payload.capacity, roomType, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, computedRent, payload.status || 'AVAILABLE', hostelId]
     );
     const insertedRoom = await query('SELECT TOP 1 * FROM Rooms WHERE roomNumber = ? AND block = ? AND floor = ? ORDER BY id DESC', [payload.roomNumber, payload.block, floor]);
     if (insertedRoom && insertedRoom.length > 0) {
@@ -1360,7 +1477,7 @@ app.post('/api/rooms', async (req, res) => {
       res.status(201).json({ ...insertedRoom[0] });
       return;
     }
-    res.status(201).json({ ...payload, floor, hostelId, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
+    res.status(201).json({ ...payload, floor, hostelId, type: roomType, rentalCost: computedRent, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
   } catch (err) {
     console.error('Create room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1382,9 +1499,9 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
       return res.status(400).json({ message: 'Student identity is required to apply for a room' });
     }
 
-    const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [studentId, 'ACTIVE']);
-    if (existingAllocation && existingAllocation.length > 0) {
-      return res.status(400).json({ message: 'Student already has an active room allocation' });
+    const activeAllocation = await getActiveAllocationForStudent(studentId);
+    if (activeAllocation && Number(activeAllocation.roomId) === roomId) {
+      return res.status(400).json({ message: 'You are already allocated to this room' });
     }
 
     const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
@@ -1397,18 +1514,26 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
       [roomId, 'ACTIVE']
     );
     const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
-    if (activeCount >= Number(room[0].capacity || 0)) {
-      await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
+    const reservedCount = await getReservedSeatCountForRoom(roomId);
+    if ((activeCount + reservedCount) >= Number(room[0].capacity || 0)) {
       return res.status(400).json({ message: 'Room is at full capacity' });
     }
 
     const existingRequest = await query(
-      'SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN (?, ?)',
-      [studentId, roomId, 'PENDING', 'APPROVED']
+      "SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN ('PENDING', 'APPROVED', 'APPROVED_WAITING_SHIFT')",
+      [studentId, roomId]
     );
 
     if (existingRequest && existingRequest.length > 0) {
       return res.status(400).json({ message: 'You have already requested this room' });
+    }
+
+    const activeReservation = await query(
+      "SELECT TOP 1 id FROM RoomRequests WHERE studentId = ? AND status IN ('PENDING', 'APPROVED_WAITING_SHIFT') ORDER BY id DESC",
+      [studentId]
+    );
+    if (activeReservation && activeReservation.length > 0) {
+      return res.status(400).json({ message: 'You already have an active room reservation request' });
     }
 
     await query(
@@ -1434,7 +1559,8 @@ app.get('/api/rooms/:id', async (req, res) => {
     const room = result[0];
     const activeAllocations = await query('SELECT COUNT(*) AS count FROM Allocations WHERE roomId = ? AND status = ?', [id, 'ACTIVE']);
     const occupiedSeats = Number(activeAllocations?.[0]?.count || 0);
-    const seatsLeft = Math.max(0, Number(room.capacity || 0) - occupiedSeats);
+    const reservedSeats = await getReservedSeatCountForRoom(id);
+    const seatsLeft = Math.max(0, Number(room.capacity || 0) - occupiedSeats - reservedSeats);
     const computedStatus = seatsLeft === 0 ? 'OCCUPIED' : 'AVAILABLE';
 
     if (room.status !== computedStatus) {
@@ -1445,6 +1571,7 @@ app.get('/api/rooms/:id', async (req, res) => {
       ...room,
       status: computedStatus,
       occupiedSeats,
+      reservedSeats,
       seatsLeft,
     });
   } catch (err) {
@@ -1459,10 +1586,18 @@ app.put('/api/rooms/:id', async (req, res) => {
     const payload = req.body;
     const floor = toNullableInt(payload.floor);
     const hostelId = toIntOrDefault(payload.hostelId, 1);
+    const roomType = normalizeRoomType(payload.type);
     const hasAC = toBit(payload.hasAC, 0);
     const hasAttachedBathroom = toBit(payload.hasAttachedBathroom, 0);
     const hasWifi = toBit(payload.hasWifi, 0);
     const hasBalcony = toBit(payload.hasBalcony, 0);
+    const computedRent = calculateRoomRentFromAttributes({
+      type: roomType,
+      hasAC,
+      hasAttachedBathroom,
+      hasWifi,
+      hasBalcony,
+    });
 
     await query(
       `UPDATE Rooms 
@@ -1473,12 +1608,12 @@ app.put('/api/rooms/:id', async (req, res) => {
         payload.block,
         floor,
         payload.capacity,
-        payload.type,
+        roomType,
         hasAC,
         hasAttachedBathroom,
         hasWifi,
         hasBalcony,
-        payload.rentalCost,
+        computedRent,
         payload.status || 'AVAILABLE',
         hostelId,
         id
@@ -1487,7 +1622,7 @@ app.put('/api/rooms/:id', async (req, res) => {
 
     await ensureBedsForRoom(id, toIntOrDefault(payload.capacity, 1));
 
-    res.json({ ...payload, id, floor, hostelId, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
+    res.json({ ...payload, id, floor, hostelId, type: roomType, rentalCost: computedRent, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
   } catch (err) {
     console.error('Update room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1908,14 +2043,30 @@ app.get('/api/fees/rent-status', async (req, res) => {
       return res.status(404).json({ message: 'Student not found' });
     }
 
+    let currentBalance = 0;
+    if (student.userId) {
+      const userBalanceRows = await query('SELECT TOP 1 balance FROM Users WHERE id = ?', [student.userId]);
+      currentBalance = Number(userBalanceRows?.[0]?.balance || 0);
+    } else {
+      const userBalanceRows = await query('SELECT TOP 1 balance FROM Users WHERE email = ?', [student.email]);
+      currentBalance = Number(userBalanceRows?.[0]?.balance || 0);
+    }
+
     const allocation = await getActiveAllocationForStudent(student.id);
     if (!allocation) {
       return res.json({
         studentId: student.id,
+        studentName: student.name,
         hasActiveAllocation: false,
+        currentBalance,
         notifyRent: false,
         canPayNow: false,
+        canRequestRoomChange: true,
+        daysUntilRoomChangeAllowed: 0,
+        roomChangeEligibleAt: null,
         daysUsed: 0,
+        daysUntilPaymentDue: 0,
+        nextPaymentDueAt: null,
         pendingCycles: 0,
       });
     }
@@ -1932,6 +2083,10 @@ app.get('/api/fees/rent-status', async (req, res) => {
     const pendingCycles = Math.max(0, dueCycles - paidCycles);
     const nextCycleToPay = paidCycles + 1;
     const nextPayDayThreshold = nextCycleToPay * 31;
+    const nextPaymentDueAt = new Date(allocation.checkInDate);
+    nextPaymentDueAt.setDate(nextPaymentDueAt.getDate() + nextPayDayThreshold);
+
+    const roomChange = await getRoomChangeEligibility(student.id, allocation);
 
     // Calculate consecutive payment months based on rent cycle references
     const rentCycleRows = await query(
@@ -1966,11 +2121,18 @@ app.get('/api/fees/rent-status', async (req, res) => {
       hasActiveAllocation: true,
       roomId: allocation.roomId,
       roomNumber: allocation.roomNumber,
+      bedId: allocation.bedId || null,
+      bedNumber: allocation.bedNumber || null,
       monthlyRent: Number(allocation.rentalCost || 0),
+      currentBalance,
       daysUsed,
       notifyRent: daysUsed >= 25,
       canPayNow: daysUsed >= nextPayDayThreshold,
       daysUntilPaymentDue: Math.max(0, nextPayDayThreshold - daysUsed),
+      nextPaymentDueAt,
+      canRequestRoomChange: roomChange.canRequestRoomChange,
+      daysUntilRoomChangeAllowed: roomChange.daysUntilRoomChangeAllowed,
+      roomChangeEligibleAt: roomChange.roomChangeEligibleAt,
       pendingCycles,
       paidCycles,
       monthsPaid: paidCycles,
@@ -2282,8 +2444,8 @@ app.post('/api/staff', async (req, res) => {
     await query('BEGIN TRANSACTION');
     try {
       await query(
-        'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
-        [payload.name, payload.email, payload.password || 'password', role, hostelId]
+        'INSERT INTO Users (name, email, password, role, hostelId, balance) VALUES (?, ?, ?, ?, ?, ?)',
+        [payload.name, payload.email, payload.password || 'password', role, hostelId, getInitialBalanceByRole(role)]
       );
 
       const insertedUsers = await query('SELECT TOP 1 id FROM Users WHERE email = ? ORDER BY id DESC', [payload.email]);
@@ -2424,24 +2586,32 @@ app.post('/api/room-requests', async (req, res) => {
       [roomId, 'ACTIVE']
     );
     const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
-    if (activeCount >= Number(room[0].capacity || 0)) {
-      await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
+    const reservedCount = await getReservedSeatCountForRoom(roomId);
+    if ((activeCount + reservedCount) >= Number(room[0].capacity || 0)) {
       return res.status(400).json({ message: 'Room is at full capacity' });
     }
 
-    const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [resolvedStudentId, 'ACTIVE']);
-    if (existingAllocation && existingAllocation.length > 0) {
-      return res.status(400).json({ message: 'Student already has an active room allocation' });
+    const activeAllocation = await getActiveAllocationForStudent(resolvedStudentId);
+    if (activeAllocation && Number(activeAllocation.roomId) === Number(roomId)) {
+      return res.status(400).json({ message: 'You are already allocated to this room' });
     }
 
     // Check if student already has a pending or approved request for this room
     const existingRequest = await query(
-      'SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN (?, ?)',
-      [resolvedStudentId, roomId, 'PENDING', 'APPROVED']
+      "SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN ('PENDING', 'APPROVED', 'APPROVED_WAITING_SHIFT')",
+      [resolvedStudentId, roomId]
     );
 
     if (existingRequest && existingRequest.length > 0) {
       return res.status(400).json({ message: 'You have already requested this room' });
+    }
+
+    const activeReservation = await query(
+      "SELECT TOP 1 id FROM RoomRequests WHERE studentId = ? AND status IN ('PENDING', 'APPROVED_WAITING_SHIFT') ORDER BY id DESC",
+      [resolvedStudentId]
+    );
+    if (activeReservation && activeReservation.length > 0) {
+      return res.status(400).json({ message: 'You already have an active room reservation request' });
     }
 
     // Create the request
@@ -2509,18 +2679,32 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
 
     const currentRequest = request[0];
     if (currentRequest.status === 'APPROVED') {
-      return res.json({ message: 'Approved successfully' });
+      return res.json({ message: 'Approved successfully', status: 'APPROVED' });
     }
-    if (currentRequest.status !== 'PENDING') {
-      return res.status(400).json({ message: 'Only pending requests can be approved' });
+    if (!['PENDING', 'APPROVED_WAITING_SHIFT'].includes(currentRequest.status)) {
+      return res.status(400).json({ message: 'Only pending or waiting-shift requests can be approved' });
     }
 
-    const existingAllocation = await query(
-      'SELECT * FROM Allocations WHERE studentId = ? AND status = ?',
-      [currentRequest.studentId, 'ACTIVE']
-    );
-    if (existingAllocation && existingAllocation.length > 0) {
-      return res.status(400).json({ message: 'Student already has an active room allocation' });
+    const activeAllocation = await getActiveAllocationForStudent(currentRequest.studentId);
+    if (activeAllocation && Number(activeAllocation.roomId) === Number(currentRequest.roomId)) {
+      await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['APPROVED', requestId]);
+      await query('DELETE FROM RoomRequests WHERE studentId = ? AND id <> ?', [currentRequest.studentId, requestId]);
+      return res.json({ message: 'Approved successfully', status: 'APPROVED', bedId: activeAllocation.bedId || null });
+    }
+
+    if (activeAllocation) {
+      const eligibility = await getRoomChangeEligibility(currentRequest.studentId, activeAllocation);
+      if (!eligibility.canRequestRoomChange) {
+        await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['APPROVED_WAITING_SHIFT', requestId]);
+        await syncRoomStatus(currentRequest.roomId);
+        return res.status(202).json({
+          message: `Approved and reserved. Student can shift after ${ROOM_CHANGE_MIN_DAYS} days in current room`,
+          status: 'APPROVED_WAITING_SHIFT',
+          daysUsed: eligibility.daysUsed,
+          daysUntilRoomChangeAllowed: eligibility.daysUntilRoomChangeAllowed,
+          roomChangeEligibleAt: eligibility.roomChangeEligibleAt,
+        });
+      }
     }
 
     await query('BEGIN TRANSACTION');
@@ -2535,7 +2719,8 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
         [currentRequest.roomId, 'ACTIVE']
       );
       const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
-      if (activeCount >= Number(room[0].capacity || 0)) {
+      const reservedCount = await getReservedSeatCountForRoom(currentRequest.roomId, requestId);
+      if ((activeCount + reservedCount) >= Number(room[0].capacity || 0)) {
         throw new Error('Room is at full capacity');
       }
 
@@ -2544,6 +2729,18 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
       const bedId = getRowId(bed);
       if (!bedId) {
         throw new Error('Room is at full capacity');
+      }
+
+      if (activeAllocation) {
+        await query(
+          'UPDATE Allocations SET status = ?, checkOutDate = GETDATE() WHERE id = ? AND status = ?',
+          ['COMPLETED', activeAllocation.id, 'ACTIVE']
+        );
+        if (activeAllocation.bedId) {
+          await closeActiveStayRecord(currentRequest.studentId, activeAllocation.bedId);
+          await query('UPDATE Beds SET status = ? WHERE id = ?', ['AVAILABLE', activeAllocation.bedId]);
+        }
+        await syncRoomStatus(activeAllocation.roomId);
       }
 
       await query(
@@ -2557,18 +2754,15 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
       await query('UPDATE Beds SET status = ? WHERE id = ?', ['OCCUPIED', bedId]);
 
       const activeBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [currentRequest.roomId, 'OCCUPIED']);
-      const newStatus = Number(activeBeds?.[0]?.count || 0) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
+      const roomReservedCount = await getReservedSeatCountForRoom(currentRequest.roomId, requestId);
+      const newStatus = (Number(activeBeds?.[0]?.count || 0) + roomReservedCount) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
       await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, currentRequest.roomId]);
-
-      if (newStatus === 'OCCUPIED') {
-        await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [currentRequest.roomId, 'PENDING']);
-      }
 
       await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['APPROVED', requestId]);
       await query('DELETE FROM RoomRequests WHERE studentId = ? AND id <> ?', [currentRequest.studentId, requestId]);
       await query('COMMIT TRANSACTION');
 
-      res.json({ message: 'Approved successfully', bedId });
+      res.json({ message: 'Approved successfully', status: 'APPROVED', bedId });
     } catch (approveError) {
       await query('ROLLBACK TRANSACTION');
       throw approveError;
@@ -2751,8 +2945,8 @@ app.post('/api/allocations', async (req, res) => {
         try {
           if (!existingUserRows || existingUserRows.length === 0) {
             await query(
-              'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
-              [studentData.name, studentEmail, studentData.password, 'STUDENT', null]
+              'INSERT INTO Users (name, email, password, role, hostelId, balance) VALUES (?, ?, ?, ?, ?, ?)',
+              [studentData.name, studentEmail, studentData.password, 'STUDENT', null, getInitialBalanceByRole('STUDENT')]
             );
           }
 
@@ -2811,7 +3005,8 @@ app.post('/api/allocations', async (req, res) => {
       [roomId, 'ACTIVE']
     );
     const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
-    if (activeCount >= Number(room[0].capacity || 0)) {
+    const reservedCount = await getReservedSeatCountForRoom(roomId);
+    if ((activeCount + reservedCount) >= Number(room[0].capacity || 0)) {
       return res.status(400).json({ message: 'Room is at full capacity' });
     }
 
@@ -2830,12 +3025,9 @@ app.post('/api/allocations', async (req, res) => {
     
     // Update room status if now full
     const activeBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [roomId, 'OCCUPIED']);
-    const newStatus = Number(activeBeds?.[0]?.count || 0) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
+    const refreshedReservedCount = await getReservedSeatCountForRoom(roomId);
+    const newStatus = (Number(activeBeds?.[0]?.count || 0) + refreshedReservedCount) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
     await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
-
-    if (newStatus === 'OCCUPIED') {
-      await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
-    }
     
     const createdAllocation = await query(
       `SELECT TOP 1 a.id, a.studentId, a.roomId, a.bedId, a.checkInDate, a.checkOutDate, a.status,
@@ -3768,7 +3960,6 @@ app.post('/api/staff-payments/initiate', async (req, res) => {
   try {
     const {
       staffUserId,
-      amount,
       cycleMonth,
       cycleYear,
       method = 'BKASH',
@@ -3780,14 +3971,10 @@ app.post('/api/staff-payments/initiate', async (req, res) => {
     const resolvedCycleMonth = toIntOrDefault(cycleMonth, 0);
     const resolvedCycleYear = toIntOrDefault(cycleYear, 0);
     let resolvedInitiatedBy = toNullableInt(initiatedByUserId);
-    const resolvedAmount = Number(amount || 0);
     const resolvedMethod = String(method || 'BKASH').toUpperCase() === 'NAGAD' ? 'NAGAD' : 'BKASH';
 
-    if (!resolvedStaffUserId || !resolvedAmount || !resolvedCycleMonth || !resolvedCycleYear) {
-      return res.status(400).json({ message: 'staffUserId, amount, cycleMonth, and cycleYear are required' });
-    }
-    if (!Number.isFinite(resolvedAmount) || resolvedAmount <= 0) {
-      return res.status(400).json({ message: 'Amount must be a positive number' });
+    if (!resolvedStaffUserId || !resolvedCycleMonth || !resolvedCycleYear) {
+      return res.status(400).json({ message: 'staffUserId, cycleMonth, and cycleYear are required' });
     }
     if (resolvedCycleMonth < 1 || resolvedCycleMonth > 12) {
       return res.status(400).json({ message: 'cycleMonth must be between 1 and 12' });
@@ -3827,8 +4014,9 @@ app.post('/api/staff-payments/initiate', async (req, res) => {
       return res.status(400).json({ message: 'Staff has not completed one month yet' });
     }
 
-    if (Math.abs(resolvedAmount - policyAmount) > 0.01) {
-      return res.status(400).json({ message: `Amount must match salary policy (${policyAmount})` });
+    const resolvedAmount = Number(policyAmount || 0);
+    if (!Number.isFinite(resolvedAmount) || resolvedAmount <= 0) {
+      return res.status(400).json({ message: 'Salary policy produced an invalid amount' });
     }
 
     const transactionId = `STAFFPAY_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;

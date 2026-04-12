@@ -47,8 +47,8 @@ export const RoomRequestsPage = () => {
 
   const handleApprove = async (requestId) => {
     try {
-      await approveRoomRequest.mutateAsync(requestId)
-      toast.success('Room request approved successfully')
+      const result = await approveRoomRequest.mutateAsync(requestId)
+      toast.success(result?.message || 'Room request updated successfully')
     } catch (approveError) {
       toast.error(approveError?.response?.data?.message || 'Failed to approve room request')
     }
@@ -74,6 +74,8 @@ export const RoomRequestsPage = () => {
           variant={
             row.original.status === 'APPROVED'
               ? 'success'
+              : row.original.status === 'APPROVED_WAITING_SHIFT'
+                ? 'warning'
               : row.original.status === 'PENDING'
                 ? 'warning'
                 : 'default'
@@ -87,6 +89,7 @@ export const RoomRequestsPage = () => {
       header: 'Actions',
       cell: ({ row }) => {
         const isApproved = row.original.status === 'APPROVED'
+        const isWaitingShift = row.original.status === 'APPROVED_WAITING_SHIFT'
 
         if (isApproved) {
           return (
@@ -106,7 +109,7 @@ export const RoomRequestsPage = () => {
             className="gap-2"
           >
             <CheckCircle2 size={16} />
-            Approve
+            {isWaitingShift ? 'Finalize Shift' : 'Approve'}
           </Button>
         )
       },

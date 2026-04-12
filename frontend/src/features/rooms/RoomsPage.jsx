@@ -13,6 +13,7 @@ import { formatCurrency } from '../../lib/utils'
 import { toast } from 'sonner'
 import { useAuth } from '../auth/hooks'
 import { useCreateRoomRequest, useRoomRequests } from '../roomRequests/hooks'
+import { useRentStatus } from '../fees/hooks'
 
 export const RoomsPage = () => {
   const navigate = useNavigate()
@@ -30,6 +31,10 @@ export const RoomsPage = () => {
     hasBalcony: false,
   })
   const createRoomRequest = useCreateRoomRequest()
+  const { data: rentStatus } = useRentStatus(
+    { studentEmail: user?.email },
+    user?.role === 'STUDENT',
+  )
   const { data: roomRequests = [] } = useRoomRequests(
     user?.role === 'STUDENT' ? { studentEmail: user?.email } : undefined,
     user?.role === 'STUDENT',
@@ -53,8 +58,31 @@ export const RoomsPage = () => {
     return new Set(roomIds)
   }, [optimisticRequestedRoomIds, roomRequests, user?.role])
 
+  const requestStatusByRoomId = useMemo(() => {
+    const map = new Map()
+    if (user?.role !== 'STUDENT') {
+      return map
+    }
+
+    for (const request of roomRequests) {
+      const roomId = String(request.roomId)
+      if (!map.has(roomId)) {
+        map.set(roomId, String(request.status || '').toUpperCase())
+      }
+    }
+
+    return map
+  }, [roomRequests, user?.role])
+
   const filteredRooms = useMemo(() => {
     return rooms.filter((room) => {
+      const seatsLeft = Number(room.seatsLeft ?? room.capacity ?? 0)
+      if (user?.role === 'STUDENT' && seatsLeft <= 0) {
+        return false
+      }
+      if (user?.role === 'STUDENT' && rentStatus?.hasActiveAllocation && String(rentStatus.roomId) === String(room.id)) {
+        return false
+      }
       if (filters.availableOnly && room.status !== 'AVAILABLE') {
         return false
       }
@@ -72,7 +100,7 @@ export const RoomsPage = () => {
       }
       return true
     })
-  }, [filters, rooms])
+  }, [filters, rentStatus?.hasActiveAllocation, rentStatus?.roomId, rooms, user?.role])
 
   const handleDelete = async () => {
     try {
@@ -192,6 +220,9 @@ export const RoomsPage = () => {
         const seatsLeft = Number(row.original.seatsLeft ?? row.original.capacity ?? 0)
         const isAvailable = seatsLeft > 0
         const isRequested = requestedRoomIds.has(String(row.original.id))
+        const requestStatus = requestStatusByRoomId.get(String(row.original.id))
+        const hasActiveAllocation = Boolean(rentStatus?.hasActiveAllocation)
+        const isCurrentRoom = hasActiveAllocation && String(rentStatus?.roomId) === String(row.original.id)
         
         if (isAdmin) {
           return (
@@ -217,8 +248,16 @@ export const RoomsPage = () => {
           // Student view
           return (
             <div className="flex gap-2">
-              {isRequested ? (
+              {requestStatus === 'APPROVED_WAITING_SHIFT' ? (
+                <Badge variant="warning">Approved - Waiting Shift</Badge>
+              ) : requestStatus === 'APPROVED' ? (
+                <Badge variant="success">Approved</Badge>
+              ) : requestStatus === 'PENDING' ? (
+                <Badge variant="warning">Pending Approval</Badge>
+              ) : isRequested ? (
                 <Badge variant="warning">Requested</Badge>
+              ) : isCurrentRoom ? (
+                <Badge variant="secondary">Current Room</Badge>
               ) : isAvailable ? (
                 <Button
                   variant="default"
@@ -271,6 +310,23 @@ export const RoomsPage = () => {
         </div>
       ) : (
         <>
+          {user?.role === 'STUDENT' && (
+            <div className="mb-4 p-4 rounded-lg border border-sky-200 bg-sky-50 dark:border-sky-900 dark:bg-sky-950/20">
+              <p className="text-sm font-semibold text-sky-800 dark:text-sky-200">Your current allocation</p>
+              <p className="text-sm text-sky-800/90 dark:text-sky-300 mt-1">
+                Room: {rentStatus?.roomNumber || 'Not allocated'} | Bed: {rentStatus?.bedNumber ? `Bed ${rentStatus.bedNumber}` : 'N/A'}
+              </p>
+              <p className="text-sm text-sky-800/90 dark:text-sky-300">
+                Monthly rent: {formatCurrency(rentStatus?.monthlyRent || 0)} | Balance: {formatCurrency(rentStatus?.currentBalance || 0)}
+              </p>
+              <p className="text-sm mt-2 text-sky-900 dark:text-sky-100">
+                {rentStatus?.canRequestRoomChange
+                  ? 'Room change is available now.'
+                  : `Room change will unlock in ${rentStatus?.daysUntilRoomChangeAllowed || 0} day(s).`}
+              </p>
+            </div>
+          )}
+
           <div className="mb-4 p-4 border border-gray-200 dark:border-dark-700 rounded-lg">
             <p className="text-sm font-medium text-gray-700 dark:text-dark-300 mb-3">Filter Rooms</p>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">

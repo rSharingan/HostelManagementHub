@@ -23,6 +23,8 @@ export const useCreateRoomRequest = () => {
     mutationFn: createRoomRequestAPI,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ROOM_REQUESTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['rooms'] })
+      queryClient.invalidateQueries({ queryKey: ['rent-status'] })
     },
   })
 }
@@ -32,7 +34,7 @@ export const useApproveRoomRequest = () => {
 
   return useMutation({
     mutationFn: approveRoomRequestAPI,
-    onSuccess: (_data, requestId) => {
+    onSuccess: (data, requestId) => {
       queryClient.setQueriesData({ queryKey: ROOM_REQUESTS_QUERY_KEY }, (oldData) => {
         if (!Array.isArray(oldData)) {
           return oldData
@@ -40,12 +42,14 @@ export const useApproveRoomRequest = () => {
 
         return oldData.map((request) =>
           String(request.id) === String(requestId)
-            ? { ...request, status: 'APPROVED' }
+            ? { ...request, status: data?.status || 'APPROVED' }
             : request,
         )
       })
 
       queryClient.invalidateQueries({ queryKey: ROOM_REQUESTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['rooms'] })
+      queryClient.invalidateQueries({ queryKey: ['rent-status'] })
     },
   })
 }

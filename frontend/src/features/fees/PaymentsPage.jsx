@@ -54,12 +54,16 @@ export const PaymentsPage = () => {
   const now = new Date()
   const [staffPayForm, setStaffPayForm] = useState({
     staffUserId: '',
-    amount: '',
     cycleMonth: String(now.getMonth() + 1),
     cycleYear: String(now.getFullYear()),
     method: 'BKASH',
     notes: '',
   })
+
+  const selectedStaffSalary = useMemo(() => {
+    const selected = allStaff.find((member) => String(member.id) === String(staffPayForm.staffUserId || ''))
+    return Number(selected?.salary || 0)
+  }, [allStaff, staffPayForm.staffUserId])
 
   const handleCreate = async (e) => {
     e.preventDefault()
@@ -92,15 +96,14 @@ export const PaymentsPage = () => {
 
   const handleInitiateStaffPayment = async (e) => {
     e.preventDefault()
-    if (!staffPayForm.staffUserId || !staffPayForm.amount) {
-      toast.error('Select staff and amount')
+    if (!staffPayForm.staffUserId) {
+      toast.error('Select staff')
       return
     }
 
     try {
       const result = await initiateStaffPayment.mutateAsync({
         staffUserId: Number(staffPayForm.staffUserId),
-        amount: Number(staffPayForm.amount),
         cycleMonth: Number(staffPayForm.cycleMonth),
         cycleYear: Number(staffPayForm.cycleYear),
         method: staffPayForm.method,
@@ -124,7 +127,6 @@ export const PaymentsPage = () => {
       const cycle = new Date()
       const result = await initiateStaffPayment.mutateAsync({
         staffUserId: Number(staffMember.id),
-        amount: Number(staffMember.salary || 0),
         cycleMonth: cycle.getMonth() + 1,
         cycleYear: cycle.getFullYear(),
         method,
@@ -408,17 +410,24 @@ export const PaymentsPage = () => {
 
                 <div className="grid grid-cols-2 gap-4 text-sm">
                   <div>
+                    <p className="text-gray-700 dark:text-dark-300">Current room: {rentStatus.roomNumber || 'Not allocated'}</p>
+                    <p className="text-gray-700 dark:text-dark-300">Occupied bed: {rentStatus.bedNumber ? `Bed ${rentStatus.bedNumber}` : 'N/A'}</p>
                     <p className="text-gray-700 dark:text-dark-300">Days used: {rentStatus.daysUsed}</p>
                     <p className="text-gray-700 dark:text-dark-300">Pending cycles: {rentStatus.pendingCycles}</p>
                   </div>
                   <div>
                     <p className="text-gray-700 dark:text-dark-300">Monthly rent: {formatCurrency(rentStatus.monthlyRent || 0)}</p>
                     <p className="text-gray-700 dark:text-dark-300">Months paid: {rentStatus.monthsPaid || 0}</p>
+                    <p className="text-gray-700 dark:text-dark-300">Balance: {formatCurrency(rentStatus.currentBalance || balanceInfo?.balance || 0)}</p>
+                    <p className="text-gray-700 dark:text-dark-300">Room change: {rentStatus.canRequestRoomChange ? 'Allowed' : `Allowed in ${rentStatus.daysUntilRoomChangeAllowed || 0} day(s)`}</p>
                   </div>
                 </div>
 
                 <div className="pt-4 border-t border-gray-200 dark:border-dark-700">
-                  <CountdownTimer daysUntil={rentStatus.daysUntilPaymentDue} />
+                  <CountdownTimer
+                    targetAt={rentStatus.nextPaymentDueAt}
+                    daysUntil={rentStatus.daysUntilPaymentDue}
+                  />
                 </div>
 
                 <div className="pt-4 border-t border-gray-200 dark:border-dark-700 space-y-2">
@@ -470,12 +479,12 @@ export const PaymentsPage = () => {
                 ))}
               </select>
               <Input
-                name="amount"
+                name="calculatedSalary"
                 type="number"
-                placeholder="Amount"
-                value={staffPayForm.amount}
-                onChange={(e) => setStaffPayForm((prev) => ({ ...prev, amount: e.target.value }))}
-                required
+                placeholder="Salary"
+                value={selectedStaffSalary}
+                readOnly
+                helperText="Automatically taken from staff salary policy"
               />
               <Input
                 name="cycleMonth"

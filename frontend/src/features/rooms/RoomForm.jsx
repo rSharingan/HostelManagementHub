@@ -1,5 +1,5 @@
 // path: src/features/rooms/RoomForm.jsx
-import { useEffect } from 'react'
+import { useEffect, useMemo } from 'react'
 import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
@@ -17,8 +17,16 @@ const roomSchema = z.object({
   hasAttachedBathroom: z.boolean().default(false),
   hasWifi: z.boolean().default(false),
   hasBalcony: z.boolean().default(false),
-  rentalCost: z.coerce.number().min(0, 'Rental cost must be 0 or more'),
 })
+
+const SHARED_BASE_RENT = 2000
+const SINGLE_BASE_RENT = 4000
+const RENT_SURCHARGES = {
+  hasAC: 1200,
+  hasWifi: 300,
+  hasBalcony: 500,
+  hasAttachedBathroom: 800,
+}
 
 export const RoomForm = ({ room, onSubmit, loading, onCancel }) => {
   const {
@@ -26,9 +34,11 @@ export const RoomForm = ({ room, onSubmit, loading, onCancel }) => {
     handleSubmit,
     formState: { errors },
     reset,
+    watch,
   } = useForm({
     resolver: zodResolver(roomSchema),
     defaultValues: {
+      type: 'SHARED',
       hasAC: false,
       hasAttachedBathroom: false,
       hasWifi: false,
@@ -42,6 +52,22 @@ export const RoomForm = ({ room, onSubmit, loading, onCancel }) => {
       reset(room)
     }
   }, [room, reset])
+
+  const watchedType = watch('type')
+  const watchedHasAC = watch('hasAC')
+  const watchedHasAttachedBathroom = watch('hasAttachedBathroom')
+  const watchedHasWifi = watch('hasWifi')
+  const watchedHasBalcony = watch('hasBalcony')
+
+  const computedRent = useMemo(() => {
+    const normalizedType = String(watchedType || '').toUpperCase() === 'SINGLE' ? 'SINGLE' : 'SHARED'
+    let total = normalizedType === 'SINGLE' ? SINGLE_BASE_RENT : SHARED_BASE_RENT
+    if (watchedHasAC) total += RENT_SURCHARGES.hasAC
+    if (watchedHasAttachedBathroom) total += RENT_SURCHARGES.hasAttachedBathroom
+    if (watchedHasWifi) total += RENT_SURCHARGES.hasWifi
+    if (watchedHasBalcony) total += RENT_SURCHARGES.hasBalcony
+    return total
+  }, [watchedType, watchedHasAC, watchedHasAttachedBathroom, watchedHasWifi, watchedHasBalcony])
 
   return (
     <Card>
@@ -75,12 +101,17 @@ export const RoomForm = ({ room, onSubmit, loading, onCancel }) => {
               {...register('floor')}
               error={errors.floor?.message}
             />
-            <Input
-              label="Room Type"
-              placeholder="DOUBLE"
-              {...register('type')}
-              error={errors.type?.message}
-            />
+            <div>
+              <label className="block text-sm font-medium text-gray-700 dark:text-dark-100 mb-2">Room Type</label>
+              <select
+                className="w-full px-4 py-3 bg-white dark:bg-dark-800 border border-gray-300 dark:border-dark-700 text-gray-900 dark:text-dark-50 rounded-lg"
+                {...register('type')}
+              >
+                <option value="SHARED">Shared</option>
+                <option value="SINGLE">Single</option>
+              </select>
+              {errors.type?.message && <p className="text-red-500 dark:text-red-400 text-sm mt-2">{errors.type?.message}</p>}
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -92,11 +123,11 @@ export const RoomForm = ({ room, onSubmit, loading, onCancel }) => {
               error={errors.capacity?.message}
             />
             <Input
-              label="Rental Cost"
+              label="Calculated Rent"
               type="number"
-              placeholder="500"
-              {...register('rentalCost')}
-              error={errors.rentalCost?.message}
+              value={computedRent}
+              readOnly
+              helperText="Auto-calculated from room type and selected attributes"
             />
           </div>
 

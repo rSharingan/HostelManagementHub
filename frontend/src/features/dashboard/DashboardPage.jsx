@@ -1,5 +1,6 @@
 // path: src/features/dashboard/DashboardPage.jsx
 import { useState, useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { Users, Home, DollarSign, AlertCircle, Wrench, CheckCircle } from 'lucide-react'
 import { useAuth } from '../auth/hooks'
 import { PageHeader } from '../../components/common/PageHeader'
@@ -14,6 +15,7 @@ import { toast } from 'sonner'
 import { formatCurrency } from '../../lib/utils'
 
 export const DashboardPage = () => {
+  const navigate = useNavigate()
   const { user } = useAuth()
   const [stats, setStats] = useState({})
   const [complaints, setComplaints] = useState([])
@@ -486,15 +488,20 @@ export const DashboardPage = () => {
     <div>
       <PageHeader
         title="Student Dashboard"
-        description="View your room and payment status"
+        description="View your allocation, balance, and rent status"
         breadcrumbs={[{ label: 'Dashboard' }]}
       />
 
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         <StatCard
           icon={Home}
-          label="Available Rooms"
-          value={rooms.filter(r => !r.occupied).length}
+          label="Current Room"
+          value={rentStatus?.roomNumber || 'Not Allocated'}
+        />
+        <StatCard
+          icon={DollarSign}
+          label="Current Balance"
+          value={formatCurrency(rentStatus?.currentBalance || 0)}
         />
         <StatCard
           icon={DollarSign}
@@ -506,18 +513,16 @@ export const DashboardPage = () => {
       <div className="mt-8 grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Card>
           <CardHeader>
-            <CardTitle>Available Rooms</CardTitle>
+            <CardTitle>Current Allocation Details</CardTitle>
           </CardHeader>
           <CardContent>
-            {rooms.filter(r => !r.occupied).slice(0, 5).map(room => (
-              <div key={room.id} className="flex justify-between items-center py-2 border-b">
-                <div>
-                  <p className="font-medium">Room {room.roomNumber}</p>
-                  <p className="text-sm text-gray-600 dark:text-dark-400">Block {room.block} - {formatCurrency(room.rentalCost)}/month</p>
-                </div>
-                <Button size="sm">Apply</Button>
-              </div>
-            ))}
+            <div className="space-y-3 text-sm">
+              <p className="text-gray-700 dark:text-dark-300">Room: <span className="font-semibold">{rentStatus?.roomNumber || 'Not allocated'}</span></p>
+              <p className="text-gray-700 dark:text-dark-300">Bed: <span className="font-semibold">{rentStatus?.bedNumber ? `Bed ${rentStatus.bedNumber}` : 'N/A'}</span></p>
+              <p className="text-gray-700 dark:text-dark-300">Monthly rent: <span className="font-semibold">{formatCurrency(rentStatus?.monthlyRent || 0)}</span></p>
+              <p className="text-gray-700 dark:text-dark-300">Days in current room: <span className="font-semibold">{rentStatus?.daysUsed || 0}</span></p>
+              <p className="text-gray-700 dark:text-dark-300">Room shift eligibility: <span className="font-semibold">{rentStatus?.canRequestRoomChange ? 'Can shift now' : `Can shift in ${rentStatus?.daysUntilRoomChangeAllowed || 0} day(s)`}</span></p>
+            </div>
           </CardContent>
         </Card>
 
@@ -536,6 +541,12 @@ export const DashboardPage = () => {
               <p className="text-sm text-gray-700 dark:text-dark-300 mt-2">
                 Months paid: {rentStatus?.monthsPaid || 0}
               </p>
+              <p className="text-sm text-gray-700 dark:text-dark-300 mt-1">
+                Room: {rentStatus?.roomNumber || 'Not allocated'} | Bed: {rentStatus?.bedNumber ? `Bed ${rentStatus.bedNumber}` : 'N/A'}
+              </p>
+              <p className="text-sm text-gray-700 dark:text-dark-300 mt-1">
+                Balance: {formatCurrency(rentStatus?.currentBalance || 0)}
+              </p>
               {rentStatus?.consecutiveMonths > 0 && (
                 <p className="text-sm text-green-600 dark:text-green-400 mt-1">
                   🎯 {rentStatus.consecutiveMonths} consecutive payment month{rentStatus.consecutiveMonths !== 1 ? 's' : ''}
@@ -549,7 +560,10 @@ export const DashboardPage = () => {
 
               <div className="py-4">
                 <p className="text-sm text-gray-600 dark:text-dark-300 mb-3">Time until next payment due:</p>
-                <CountdownTimer daysUntil={rentStatus?.daysUntilPaymentDue || 0} />
+                <CountdownTimer
+                  targetAt={rentStatus?.nextPaymentDueAt}
+                  daysUntil={rentStatus?.daysUntilPaymentDue || 0}
+                />
               </div>
 
               <hr className="my-4 border-gray-300 dark:border-dark-700" />
@@ -576,28 +590,15 @@ export const DashboardPage = () => {
       <div className="mt-8">
         <Card>
           <CardHeader>
-            <CardTitle>Submit Complaint</CardTitle>
+            <CardTitle>Maintenance Support</CardTitle>
           </CardHeader>
           <CardContent>
-            <form onSubmit={handleSubmitComplaint} className="space-y-4">
-              <textarea
-                name="description"
-                placeholder="Description"
-                className="w-full px-3 py-2 border rounded"
-                rows={3}
-                required
-              />
-              <select
-                name="priority"
-                className="w-full px-3 py-2 border rounded bg-white dark:bg-dark-900"
-                defaultValue="MEDIUM"
-              >
-                <option value="LOW">LOW</option>
-                <option value="MEDIUM">MEDIUM</option>
-                <option value="HIGH">HIGH</option>
-              </select>
-              <Button type="submit">Submit Complaint</Button>
-            </form>
+            <p className="text-sm text-gray-700 dark:text-dark-300 mb-4">
+              Submit or track complaints from the maintenance page.
+            </p>
+            <Button type="button" onClick={() => navigate('/maintenance')}>
+              Go to Maintenance
+            </Button>
           </CardContent>
         </Card>
       </div>

@@ -2,7 +2,7 @@
 import { useState, useEffect } from 'react'
 import { AlertCircle } from 'lucide-react'
 
-export const CountdownTimer = ({ daysUntil = 0 }) => {
+export const CountdownTimer = ({ daysUntil = 0, targetAt = null }) => {
   const [timeLeft, setTimeLeft] = useState({
     days: 0,
     hours: 0,
@@ -10,12 +10,23 @@ export const CountdownTimer = ({ daysUntil = 0 }) => {
     seconds: 0,
   })
 
-  const isUrgent = daysUntil <= 3
+  const totalSecondsLeft =
+    (timeLeft.days * 24 * 60 * 60) +
+    (timeLeft.hours * 60 * 60) +
+    (timeLeft.minutes * 60) +
+    timeLeft.seconds
+  const isUrgent = totalSecondsLeft <= (3 * 24 * 60 * 60)
 
   useEffect(() => {
+    const parsedTargetAt = targetAt ? new Date(targetAt).getTime() : null
+    const isTargetValid = Number.isFinite(parsedTargetAt)
+    const fallbackSeconds = Math.max(0, Number(daysUntil || 0) * 24 * 60 * 60)
+    const deadlineTimestamp = isTargetValid
+      ? parsedTargetAt
+      : Date.now() + (fallbackSeconds * 1000)
+
     const calculateTimeLeft = () => {
-      // Total seconds from days until
-      let totalSeconds = Math.max(0, daysUntil * 24 * 60 * 60)
+      const totalSeconds = Math.max(0, Math.floor((deadlineTimestamp - Date.now()) / 1000))
 
       if (totalSeconds === 0) {
         setTimeLeft({ days: 0, hours: 0, minutes: 0, seconds: 0 })
@@ -33,7 +44,7 @@ export const CountdownTimer = ({ daysUntil = 0 }) => {
     calculateTimeLeft()
     const timer = setInterval(calculateTimeLeft, 1000)
     return () => clearInterval(timer)
-  }, [daysUntil])
+  }, [daysUntil, targetAt])
 
   return (
     <div className="space-y-3">
