@@ -11,6 +11,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Ca
 import axios from '../../lib/api/axios'
 import { API_ENDPOINTS } from '../../lib/api/endpoints'
 import { toast } from 'sonner'
+import { formatCurrency } from '../../lib/utils'
 
 export const DashboardPage = () => {
   const { user } = useAuth()
@@ -512,7 +513,7 @@ export const DashboardPage = () => {
               <div key={room.id} className="flex justify-between items-center py-2 border-b">
                 <div>
                   <p className="font-medium">Room {room.roomNumber}</p>
-                  <p className="text-sm text-gray-600 dark:text-dark-400">Block {room.block} - ${room.rentalCost}/month</p>
+                  <p className="text-sm text-gray-600 dark:text-dark-400">Block {room.block} - {formatCurrency(room.rentalCost)}/month</p>
                 </div>
                 <Button size="sm">Apply</Button>
               </div>

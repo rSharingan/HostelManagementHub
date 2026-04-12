@@ -8,11 +8,16 @@ import { DataTable } from '../../components/common/DataTable'
 import { useCreateStaff, useDeleteStaff, useStaff } from './hooks'
 import { Badge } from '../../components/ui/Badge'
 import { toast } from 'sonner'
+import { formatCurrency } from '../../lib/utils'
+import { useInitiateStaffPayment } from '../fees/hooks'
+import { useAuth } from '../auth/hooks'
 
 export const StaffPage = () => {
+  const { user } = useAuth()
   const { data = [], isLoading } = useStaff()
   const createStaff = useCreateStaff()
   const deleteStaff = useDeleteStaff()
+  const initiateStaffPayment = useInitiateStaffPayment()
   const today = new Date().toISOString().slice(0, 10)
   const [form, setForm] = useState({
     name: '',
@@ -26,6 +31,7 @@ export const StaffPage = () => {
     shift: 'DAY',
     specialty: '',
     joinedDate: today,
+    salary: '',
   })
 
   const handleCreate = async (e) => {
@@ -50,6 +56,7 @@ export const StaffPage = () => {
       shift: form.shift,
       specialty: form.specialty,
       joinedDate: form.joinedDate,
+      salary: form.role === 'WARDEN' ? Number(form.salary || 0) : undefined,
     }
 
     try {
@@ -67,6 +74,7 @@ export const StaffPage = () => {
         shift: 'DAY',
         specialty: '',
         joinedDate: today,
+        salary: '',
       })
     } catch (error) {
       toast.error(error?.response?.data?.message || 'Failed to create staff member')
@@ -82,6 +90,30 @@ export const StaffPage = () => {
     }
   }
 
+  const handlePayDueStaff = async (staffMember, method = 'BKASH') => {
+    try {
+      const cycle = new Date()
+      const result = await initiateStaffPayment.mutateAsync({
+        staffUserId: Number(staffMember.id),
+        amount: Number(staffMember.salary || 0),
+        cycleMonth: cycle.getMonth() + 1,
+        cycleYear: cycle.getFullYear(),
+        method,
+        initiatedByUserId: user?.id,
+        notes: `Salary from staff list for ${staffMember.workedDays || 0} worked days`,
+      })
+
+      if (!result?.redirectUrl) {
+        toast.error('Could not start staff payment')
+        return
+      }
+
+      window.location.href = result.redirectUrl
+    } catch (error) {
+      toast.error(error?.response?.data?.message || 'Failed to initiate salary payment')
+    }
+  }
+
   const columns = [
     { header: 'ID', accessorKey: 'id' },
     { header: 'Name', accessorKey: 'name' },
@@ -91,6 +123,16 @@ export const StaffPage = () => {
     { header: 'Shift', accessorKey: 'shift' },
     { header: 'Specialty', accessorKey: 'specialty' },
     { header: 'Joined Date', accessorKey: 'joinedDate' },
+    { header: 'Worked Days', accessorKey: 'workedDays' },
+    {
+      header: 'Salary',
+      accessorKey: 'salary',
+      cell: ({ row }) => formatCurrency(row.original.salary),
+    },
+    {
+      header: 'Salary Status',
+      cell: ({ row }) => <Badge variant={row.original.isSalaryDue ? 'warning' : 'success'}>{row.original.isSalaryDue ? 'DUE' : 'PAID/LOCKED'}</Badge>,
+    },
     {
       header: 'Role',
       accessorKey: 'role',
@@ -104,9 +146,18 @@ export const StaffPage = () => {
     {
       header: 'Actions',
       cell: ({ row }) => (
-        <Button size="sm" variant="danger" onClick={() => handleDelete(row.original.id)}>
-          Delete
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            onClick={() => handlePayDueStaff(row.original, 'BKASH')}
+            disabled={!row.original.isSalaryDue || initiateStaffPayment.isPending}
+          >
+            Pay
+          </Button>
+          <Button size="sm" variant="danger" onClick={() => handleDelete(row.original.id)}>
+            Delete
+          </Button>
+        </div>
       ),
     },
   ]
@@ -226,6 +277,18 @@ export const StaffPage = () => {
               value={form.joinedDate}
               onChange={(e) => setForm((prev) => ({ ...prev, joinedDate: e.target.value }))}
               className="md:col-span-2"
+            />
+            <Input
+              name="salary"
+              label="Salary (BDT)"
+              type="number"
+              min="0"
+              placeholder={form.role === 'CARETAKER' ? 'Fixed by policy' : 'Monthly salary'}
+              value={form.salary}
+              onChange={(e) => setForm((prev) => ({ ...prev, salary: e.target.value }))}
+              className="md:col-span-2"
+              disabled={form.role === 'CARETAKER'}
+              required={form.role === 'WARDEN'}
             />
             <Input
               name="hostelId"

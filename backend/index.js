@@ -7,6 +7,7 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || 'http://localhost:5173';
 const BACKEND_BASE_URL = process.env.BACKEND_BASE_URL || `http://localhost:${PORT}`;
+const CARETAKER_FIXED_SALARY = Number(process.env.CARETAKER_FIXED_SALARY || 12000);
 
 const BKASH_SANDBOX_BASE_URL = process.env.BKASH_SANDBOX_BASE_URL || 'https://checkout.sandbox.bka.sh/v1.2.0-beta';
 const BKASH_SANDBOX_TOKEN_URL = process.env.BKASH_SANDBOX_TOKEN_URL || `${BKASH_SANDBOX_BASE_URL}/tokenized/checkout/token/grant?grant_type=client_credentials`;
@@ -270,13 +271,31 @@ function getRowId(row) {
   return row.id ?? row.Id ?? row.ID ?? row.IDENTIFIER ?? null;
 }
 
+function getCurrentCycle() {
+  const now = new Date();
+  return { month: now.getMonth() + 1, year: now.getFullYear() };
+}
+
+function resolveStaffSalary(role, salary) {
+  if (String(role || '').toUpperCase() === 'CARETAKER') {
+    return CARETAKER_FIXED_SALARY;
+  }
+
+  const parsed = Number(salary || 0);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+}
+
 function normalizeStaffProfileRow(row) {
   if (!row) {
     return row;
   }
 
   const normalizedShift = row.shift ?? row.shiftName ?? row.Column7 ?? null;
-  const normalized = { ...row, shift: normalizedShift };
+  const normalized = {
+    ...row,
+    shift: normalizedShift,
+    salary: resolveStaffSalary(row.role, row.salary),
+  };
   if (Object.prototype.hasOwnProperty.call(normalized, 'Column7')) {
     delete normalized.Column7;
   }
@@ -435,6 +454,49 @@ async function ensureFeatureTables() {
   `)
 
   await ensureColumnExists('Users', 'hostelId', 'hostelId INT NULL')
+  await ensureColumnExists('Users', 'balance', 'balance DECIMAL(12,2) NOT NULL DEFAULT 100000')
+
+  await query(`
+    IF NOT EXISTS (
+      SELECT 1
+      FROM sys.default_constraints dc
+      INNER JOIN sys.columns c ON c.default_object_id = dc.object_id
+      INNER JOIN sys.tables t ON t.object_id = c.object_id
+      WHERE t.name = 'Users'
+        AND c.name = 'balance'
+        AND dc.definition LIKE '%100000%'
+    )
+    BEGIN
+      DECLARE @dcName NVARCHAR(200);
+      SELECT TOP 1 @dcName = dc.name
+      FROM sys.default_constraints dc
+      INNER JOIN sys.columns c ON c.default_object_id = dc.object_id
+      INNER JOIN sys.tables t ON t.object_id = c.object_id
+      WHERE t.name = 'Users'
+        AND c.name = 'balance';
+
+      IF @dcName IS NOT NULL
+      BEGIN
+        DECLARE @dropSql NVARCHAR(400);
+        SET @dropSql = N'ALTER TABLE dbo.Users DROP CONSTRAINT ' + QUOTENAME(@dcName);
+        EXEC sp_executesql @dropSql;
+      END
+
+      ALTER TABLE dbo.Users
+      ADD CONSTRAINT DF_Users_balance DEFAULT (100000) FOR balance;
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.SchemaMigrations', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.SchemaMigrations (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        migrationKey NVARCHAR(150) NOT NULL UNIQUE,
+        appliedAt DATETIME2 NOT NULL DEFAULT GETDATE()
+      )
+    END
+  `)
 
   await query(`
     IF OBJECT_ID('dbo.Students', 'U') IS NULL
@@ -465,6 +527,7 @@ async function ensureFeatureTables() {
         employmentStatus NVARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
         [shift] NVARCHAR(20) NOT NULL DEFAULT 'DAY',
         specialty NVARCHAR(100) NULL,
+        salary DECIMAL(10,2) NULL,
         joinedDate DATE NULL,
         createdAt DATETIME2 NOT NULL DEFAULT GETDATE(),
         FOREIGN KEY (userId) REFERENCES dbo.Users(id)
@@ -476,7 +539,36 @@ async function ensureFeatureTables() {
   await ensureColumnExists('StaffProfiles', 'employmentStatus', "employmentStatus NVARCHAR(20) NOT NULL DEFAULT 'ACTIVE'")
   await ensureColumnExists('StaffProfiles', 'shift', "[shift] NVARCHAR(20) NOT NULL DEFAULT 'DAY'")
   await ensureColumnExists('StaffProfiles', 'specialty', 'specialty NVARCHAR(100) NULL')
+  await ensureColumnExists('StaffProfiles', 'salary', 'salary DECIMAL(10,2) NULL')
   await ensureColumnExists('StaffProfiles', 'joinedDate', 'joinedDate DATE NULL')
+
+  await query(`
+    IF OBJECT_ID('dbo.StaffSalaryPrompts', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.StaffSalaryPrompts (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        staffUserId INT NOT NULL,
+        cycleMonth INT NOT NULL,
+        cycleYear INT NOT NULL,
+        message NVARCHAR(255) NULL,
+        status NVARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        created_at DATETIME2 NOT NULL DEFAULT GETDATE(),
+        resolvedByUserId INT NULL,
+        resolved_at DATETIME2 NULL,
+        FOREIGN KEY (staffUserId) REFERENCES dbo.Users(id),
+        FOREIGN KEY (resolvedByUserId) REFERENCES dbo.Users(id)
+      )
+    END
+  `)
+
+  await ensureColumnExists('StaffSalaryPrompts', 'staffUserId', 'staffUserId INT NOT NULL')
+  await ensureColumnExists('StaffSalaryPrompts', 'cycleMonth', 'cycleMonth INT NOT NULL DEFAULT MONTH(GETDATE())')
+  await ensureColumnExists('StaffSalaryPrompts', 'cycleYear', 'cycleYear INT NOT NULL DEFAULT YEAR(GETDATE())')
+  await ensureColumnExists('StaffSalaryPrompts', 'message', 'message NVARCHAR(255) NULL')
+  await ensureColumnExists('StaffSalaryPrompts', 'status', "status NVARCHAR(20) NOT NULL DEFAULT 'PENDING'")
+  await ensureColumnExists('StaffSalaryPrompts', 'created_at', 'created_at DATETIME2 NOT NULL DEFAULT GETDATE()')
+  await ensureColumnExists('StaffSalaryPrompts', 'resolvedByUserId', 'resolvedByUserId INT NULL')
+  await ensureColumnExists('StaffSalaryPrompts', 'resolved_at', 'resolved_at DATETIME2 NULL')
 
   await query(`
     IF OBJECT_ID('dbo.Rooms', 'U') IS NULL
@@ -637,6 +729,42 @@ async function ensureFeatureTables() {
     END
   `)
 
+  await query(`
+    IF OBJECT_ID('dbo.StaffPayments', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.StaffPayments (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        staffUserId INT NOT NULL,
+        initiatedByUserId INT NULL,
+        cycleMonth INT NOT NULL,
+        cycleYear INT NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        method NVARCHAR(20) NOT NULL DEFAULT 'BKASH',
+        status NVARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        transaction_id NVARCHAR(100) NULL,
+        reference NVARCHAR(150) NULL,
+        paidDate DATETIME2 NULL,
+        created_at DATETIME2 NOT NULL DEFAULT GETDATE(),
+        notes NVARCHAR(255) NULL,
+        FOREIGN KEY (staffUserId) REFERENCES dbo.Users(id),
+        FOREIGN KEY (initiatedByUserId) REFERENCES dbo.Users(id)
+      )
+    END
+  `)
+
+  await ensureColumnExists('StaffPayments', 'staffUserId', 'staffUserId INT NOT NULL')
+  await ensureColumnExists('StaffPayments', 'initiatedByUserId', 'initiatedByUserId INT NULL')
+  await ensureColumnExists('StaffPayments', 'cycleMonth', 'cycleMonth INT NOT NULL DEFAULT 1')
+  await ensureColumnExists('StaffPayments', 'cycleYear', 'cycleYear INT NOT NULL DEFAULT YEAR(GETDATE())')
+  await ensureColumnExists('StaffPayments', 'amount', 'amount DECIMAL(10,2) NOT NULL DEFAULT 0')
+  await ensureColumnExists('StaffPayments', 'method', "method NVARCHAR(20) NOT NULL DEFAULT 'BKASH'")
+  await ensureColumnExists('StaffPayments', 'status', "status NVARCHAR(20) NOT NULL DEFAULT 'PENDING'")
+  await ensureColumnExists('StaffPayments', 'transaction_id', 'transaction_id NVARCHAR(100) NULL')
+  await ensureColumnExists('StaffPayments', 'reference', 'reference NVARCHAR(150) NULL')
+  await ensureColumnExists('StaffPayments', 'paidDate', 'paidDate DATETIME2 NULL')
+  await ensureColumnExists('StaffPayments', 'created_at', 'created_at DATETIME2 NOT NULL DEFAULT GETDATE()')
+  await ensureColumnExists('StaffPayments', 'notes', 'notes NVARCHAR(255) NULL')
+
   await ensureColumnExists('Payments', 'status', "status NVARCHAR(20) NOT NULL DEFAULT 'PENDING'")
   await ensureColumnExists('Payments', 'transaction_id', 'transaction_id NVARCHAR(100) NULL')
   await ensureColumnExists('Payments', 'created_at', 'created_at DATETIME2 DEFAULT GETDATE()')
@@ -709,6 +837,18 @@ async function ensureFeatureTables() {
 
   await query(`
     UPDATE dbo.Users SET hostelId = 1 WHERE hostelId IS NULL AND role IN ('ADMIN', 'WARDEN', 'ACCOUNTANT', 'CARETAKER')
+  `)
+
+  await query(`
+    IF NOT EXISTS (SELECT 1 FROM dbo.SchemaMigrations WHERE migrationKey = 'users_balance_100000_initial')
+    BEGIN
+      UPDATE dbo.Users SET balance = 100000;
+      INSERT INTO dbo.SchemaMigrations (migrationKey) VALUES ('users_balance_100000_initial');
+    END
+  `)
+
+  await query(`
+    UPDATE dbo.Users SET balance = 100000 WHERE balance IS NULL
   `)
 
   // Ensure every student has a linked STUDENT user for strict 1:1 User->Student mapping.
@@ -816,6 +956,10 @@ async function ensureFeatureTables() {
   await ensureForeignKey('FK_RoomRequests_Students', 'RoomRequests', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
   await ensureForeignKey('FK_RoomRequests_Rooms', 'RoomRequests', 'FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)')
   await ensureForeignKey('FK_Payments_Students', 'Payments', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
+  await ensureForeignKey('FK_StaffPayments_StaffUser', 'StaffPayments', 'FOREIGN KEY (staffUserId) REFERENCES dbo.Users(id)')
+  await ensureForeignKey('FK_StaffPayments_InitiatedBy', 'StaffPayments', 'FOREIGN KEY (initiatedByUserId) REFERENCES dbo.Users(id)')
+  await ensureForeignKey('FK_StaffPrompts_StaffUser', 'StaffSalaryPrompts', 'FOREIGN KEY (staffUserId) REFERENCES dbo.Users(id)')
+  await ensureForeignKey('FK_StaffPrompts_ResolvedBy', 'StaffSalaryPrompts', 'FOREIGN KEY (resolvedByUserId) REFERENCES dbo.Users(id)')
   await ensureForeignKey('FK_Maintenance_Students', 'Maintenance', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
   await ensureForeignKey('FK_Maintenance_Staff', 'Maintenance', 'FOREIGN KEY (staffId) REFERENCES dbo.Users(id)')
   await ensureForeignKey('FK_Maintenance_Rooms', 'Maintenance', 'FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)')
@@ -853,6 +997,20 @@ async function ensureFeatureTables() {
     BEGIN
       CREATE UNIQUE INDEX UX_StaffProfiles_UserId
       ON dbo.StaffProfiles(userId)
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.StaffPayments', 'U') IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM sys.indexes
+         WHERE name = 'IX_StaffPayments_StaffCycle'
+           AND object_id = OBJECT_ID('dbo.StaffPayments')
+       )
+    BEGIN
+      CREATE INDEX IX_StaffPayments_StaffCycle
+      ON dbo.StaffPayments(staffUserId, cycleYear, cycleMonth)
     END
   `)
 
@@ -894,7 +1052,9 @@ app.post('/api/auth/signup', async (req, res) => {
       await query('INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)', [name, email, password, role, 1]);
     }
 
-    res.status(201).json({ token: `token-${Date.now()}`, user: { name, email, role } });
+    const createdUsers = await query('SELECT TOP 1 id, name, email, role, balance FROM Users WHERE email = ? ORDER BY id DESC', [email]);
+    const createdUser = createdUsers?.[0] || { name, email, role, balance: 100000 };
+    res.status(201).json({ token: `token-${Date.now()}`, user: { id: createdUser.id, name: createdUser.name, email: createdUser.email, role: createdUser.role, balance: Number(createdUser.balance || 0) } });
   } catch (err) {
     console.error('Signup error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -911,7 +1071,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const user = users[0];
-    return res.json({ token: `token-${user.id}-${Date.now()}`, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    return res.json({ token: `token-${user.id}-${Date.now()}`, user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: Number(user.balance || 0) } });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -952,9 +1112,16 @@ app.post('/api/auth/change-password', async (req, res) => {
 
 app.get('/api/me', async (req, res) => {
   try {
-    const auth = req.headers.authorization || '';
-    const token = auth.replace('Bearer ', '');
-    res.json({ id: 1, name: 'Admin', email: 'admin@hostel.com', role: 'ADMIN' });
+    const email = req.query.email;
+    if (email) {
+      const rows = await query('SELECT TOP 1 id, name, email, role, balance FROM Users WHERE email = ?', [email]);
+      if (rows && rows.length > 0) {
+        const user = rows[0];
+        return res.json({ id: user.id, name: user.name, email: user.email, role: user.role, balance: Number(user.balance || 0) });
+      }
+    }
+
+    res.json({ id: 1, name: 'Admin', email: 'admin@hostel.com', role: 'ADMIN', balance: 0 });
   } catch (err) {
     console.error('Me error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1867,7 +2034,7 @@ app.post('/api/fees/rent-pay', async (req, res) => {
 
     const cycleLabel = `RENT_${student.id}_CYCLE_${nextCycleToPay}`;
     const invoiceDescription = `RENT_CYCLE_${nextCycleToPay}`;
-    const method = payload.method || 'CARD';
+    const method = String(payload.method || 'BKASH').toUpperCase() === 'NAGAD' ? 'NAGAD' : 'BKASH';
     const externalReference = payload.reference || null;
 
     const txResult = await query(
@@ -1893,6 +2060,25 @@ app.post('/api/fees/rent-pay', async (req, res) => {
            VALUES (?, ?, GETDATE(), 'PENDING', ?);
            SET @invoiceId = SCOPE_IDENTITY();
          END
+
+         DECLARE @payerUserId INT;
+         DECLARE @adminUserId INT;
+
+         SELECT TOP 1 @payerUserId = userId FROM Students WHERE id = ?;
+         SELECT TOP 1 @adminUserId = id FROM Users WHERE role = 'ADMIN' ORDER BY id ASC;
+
+         IF @payerUserId IS NULL OR @adminUserId IS NULL
+         BEGIN
+           RAISERROR('Payer or admin account not found for transfer.', 16, 1);
+         END
+
+         IF (SELECT balance FROM Users WHERE id = @payerUserId) < ?
+         BEGIN
+           RAISERROR('Insufficient balance to complete rent payment.', 16, 1);
+         END
+
+         UPDATE Users SET balance = balance - ? WHERE id = @payerUserId;
+         UPDATE Users SET balance = balance + ? WHERE id = @adminUserId;
 
          INSERT INTO Payments (invoiceId, studentId, amount, paymentDate, method, reference)
          VALUES (@invoiceId, ?, ?, GETDATE(), ?, ?);
@@ -1920,6 +2106,10 @@ app.post('/api/fees/rent-pay', async (req, res) => {
         student.id,
         amount,
         invoiceDescription,
+        student.id,
+        amount,
+        amount,
+        amount,
         student.id,
         amount,
         method,
@@ -1989,13 +2179,32 @@ app.put('/api/fees/payments/:id', async (req, res) => {
 app.get('/api/staff', async (req, res) => {
   try {
     const result = await query(`
-      SELECT u.id, u.name, u.email, u.role, u.hostelId,
-             sp.phone, sp.employmentStatus, sp.[shift] AS shiftName, sp.specialty, sp.joinedDate
+      SELECT u.id, u.name, u.email, u.role, u.hostelId, u.balance,
+             sp.phone, sp.employmentStatus, sp.[shift] AS shiftName, sp.specialty, sp.joinedDate, sp.salary,
+             DATEDIFF(day, ISNULL(sp.joinedDate, GETDATE()), GETDATE()) AS workedDays,
+             CASE WHEN EXISTS (
+               SELECT 1 FROM StaffPayments pay
+               WHERE pay.staffUserId = u.id
+                 AND pay.cycleMonth = MONTH(GETDATE())
+                 AND pay.cycleYear = YEAR(GETDATE())
+                 AND pay.status = 'SUCCESS'
+             ) THEN 1 ELSE 0 END AS currentCyclePaid
       FROM Users u
       INNER JOIN StaffProfiles sp ON sp.userId = u.id
       WHERE u.role IN ('WARDEN', 'CARETAKER')
     `);
-    res.json((result || []).map(normalizeStaffProfileRow));
+    const rows = (result || []).map(normalizeStaffProfileRow).map((row) => {
+      const workedDays = Math.max(0, Number(row.workedDays || 0));
+      const isActive = String(row.employmentStatus || '').toUpperCase() === 'ACTIVE';
+      return {
+        ...row,
+        workedDays,
+        currentCyclePaid: Number(row.currentCyclePaid || 0) === 1,
+        isSalaryDue: isActive && workedDays >= 30 && Number(row.currentCyclePaid || 0) !== 1,
+        balance: Number(row.balance || 0),
+      };
+    });
+    res.json(rows);
   } catch (err) {
     console.error('Get staff error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -2006,8 +2215,16 @@ app.get('/api/staff/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
     const result = await query(`
-      SELECT u.id, u.name, u.email, u.role, u.hostelId,
-             sp.phone, sp.employmentStatus, sp.[shift] AS shiftName, sp.specialty, sp.joinedDate
+            SELECT u.id, u.name, u.email, u.role, u.hostelId, u.balance,
+              sp.phone, sp.employmentStatus, sp.[shift] AS shiftName, sp.specialty, sp.joinedDate, sp.salary,
+              DATEDIFF(day, ISNULL(sp.joinedDate, GETDATE()), GETDATE()) AS workedDays,
+              CASE WHEN EXISTS (
+           SELECT 1 FROM StaffPayments pay
+           WHERE pay.staffUserId = u.id
+             AND pay.cycleMonth = MONTH(GETDATE())
+             AND pay.cycleYear = YEAR(GETDATE())
+             AND pay.status = 'SUCCESS'
+              ) THEN 1 ELSE 0 END AS currentCyclePaid
       FROM Users u
       INNER JOIN StaffProfiles sp ON sp.userId = u.id
       WHERE u.id = ?
@@ -2015,7 +2232,16 @@ app.get('/api/staff/:id', async (req, res) => {
     if (!result || result.length === 0) {
       return res.status(404).json({ message: 'Not found' });
     }
-    res.json(normalizeStaffProfileRow(result[0]));
+    const row = normalizeStaffProfileRow(result[0]);
+    const workedDays = Math.max(0, Number(row.workedDays || 0));
+    const isActive = String(row.employmentStatus || '').toUpperCase() === 'ACTIVE';
+    res.json({
+      ...row,
+      workedDays,
+      currentCyclePaid: Number(row.currentCyclePaid || 0) === 1,
+      isSalaryDue: isActive && workedDays >= 30 && Number(row.currentCyclePaid || 0) !== 1,
+      balance: Number(row.balance || 0),
+    });
   } catch (err) {
     console.error('Get staff member error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -2034,6 +2260,7 @@ app.post('/api/staff', async (req, res) => {
     const specialty = payload.specialty || null;
     const phone = payload.phone || null;
     const joinedDate = payload.joinedDate || null;
+    const salary = role === 'CARETAKER' ? CARETAKER_FIXED_SALARY : Number(payload.salary || 0);
 
     if (!payload.name || !payload.email || !payload.password) {
       return res.status(400).json({ message: 'Name, email and password are required' });
@@ -2066,8 +2293,8 @@ app.post('/api/staff', async (req, res) => {
       }
 
       await query(
-        'INSERT INTO StaffProfiles (userId, phone, employmentStatus, [shift], specialty, joinedDate) VALUES (?, ?, ?, ?, ?, ?)',
-        [linkedUserId, phone, employmentStatus, shift, specialty, joinedDate]
+        'INSERT INTO StaffProfiles (userId, phone, employmentStatus, [shift], specialty, joinedDate, salary) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [linkedUserId, phone, employmentStatus, shift, specialty, joinedDate, role === 'CARETAKER' ? CARETAKER_FIXED_SALARY : (Number.isFinite(salary) && salary > 0 ? salary : null)]
       );
       await query('COMMIT TRANSACTION');
     } catch (createErr) {
@@ -2075,7 +2302,7 @@ app.post('/api/staff', async (req, res) => {
       throw createErr;
     }
 
-    res.status(201).json({ name: payload.name, email: payload.email, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate });
+    res.status(201).json({ name: payload.name, email: payload.email, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate, salary: resolveStaffSalary(role, salary) });
   } catch (err) {
     console.error('Create staff error:', err);
     res.status(500).json({ message: err.message || 'Internal server error' });
@@ -2095,6 +2322,7 @@ app.put('/api/staff/:id', async (req, res) => {
     const specialty = payload.specialty || null;
     const phone = payload.phone || null;
     const joinedDate = payload.joinedDate || null;
+    const salary = role === 'CARETAKER' ? CARETAKER_FIXED_SALARY : Number(payload.salary || 0);
 
     const hostel = await query('SELECT TOP 1 id FROM Hostels WHERE id = ?', [hostelId]);
     if (!hostel || hostel.length === 0) {
@@ -2109,17 +2337,17 @@ app.put('/api/staff/:id', async (req, res) => {
     const profileRows = await query('SELECT TOP 1 id FROM StaffProfiles WHERE userId = ?', [id]);
     if (!profileRows || profileRows.length === 0) {
       await query(
-        'INSERT INTO StaffProfiles (userId, phone, employmentStatus, [shift], specialty, joinedDate) VALUES (?, ?, ?, ?, ?, ?)',
-        [id, phone, employmentStatus, shift, specialty, joinedDate]
+        'INSERT INTO StaffProfiles (userId, phone, employmentStatus, [shift], specialty, joinedDate, salary) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, phone, employmentStatus, shift, specialty, joinedDate, role === 'CARETAKER' ? CARETAKER_FIXED_SALARY : (Number.isFinite(salary) && salary > 0 ? salary : null)]
       );
     } else {
       await query(
-        'UPDATE StaffProfiles SET phone = ?, employmentStatus = ?, [shift] = ?, specialty = ?, joinedDate = ? WHERE userId = ?',
-        [phone, employmentStatus, shift, specialty, joinedDate, id]
+        'UPDATE StaffProfiles SET phone = ?, employmentStatus = ?, [shift] = ?, specialty = ?, joinedDate = ?, salary = ? WHERE userId = ?',
+        [phone, employmentStatus, shift, specialty, joinedDate, role === 'CARETAKER' ? CARETAKER_FIXED_SALARY : (Number.isFinite(salary) && salary > 0 ? salary : null), id]
       );
     }
 
-    res.json({ ...payload, id, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate });
+    res.json({ ...payload, id, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate, salary: resolveStaffSalary(role, salary) });
   } catch (err) {
     console.error('Update staff error:', err);
     res.status(500).json({ message: err.message || 'Internal server error' });
@@ -2145,6 +2373,26 @@ app.get('/api/users', async (req, res) => {
     res.json(result);
   } catch (err) {
     console.error('Get users error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/users/balance', async (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) {
+      return res.status(400).json({ message: 'email is required' });
+    }
+
+    const rows = await query('SELECT TOP 1 id, name, email, role, balance FROM Users WHERE email = ?', [email]);
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const user = rows[0];
+    res.json({ id: user.id, name: user.name, email: user.email, role: user.role, balance: Number(user.balance || 0) });
+  } catch (err) {
+    console.error('Get user balance error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
@@ -3008,8 +3256,15 @@ app.post('/api/payments/initiate', async (req, res) => {
       }
     } catch (providerError) {
       console.error('❌ [PAYMENT INITIATE] External provider integration failed:', providerError);
-      await query('UPDATE Payments SET status = ? WHERE transaction_id = ?', ['FAILED', transactionId]);
-      return res.status(502).json({ message: 'Payment provider initialization failed' });
+      // Demo-safe fallback for local testing without provider credentials.
+      redirectUrl = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}&method=${encodeURIComponent(method)}&paymentType=STUDENT`;
+      return res.json({
+        transactionId,
+        redirectUrl,
+        amount,
+        method,
+        message: 'Payment initialized in demo mode (provider unavailable)',
+      });
     }
 
     console.log('✅ [PAYMENT INITIATE] Success:', { transactionId, redirectUrl });
@@ -3056,13 +3311,68 @@ app.all('/api/payments/callback/redirect', async (req, res) => {
     }
 
     console.log('💾 [PAYMENT REDIRECT CALLBACK] Updating payment status:', { transactionId, newStatus, reference });
-    await query('UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?', [newStatus, reference || '', transactionId]);
+    if (newStatus === 'SUCCESS' && String(existingPayment.status || '').toUpperCase() === 'PENDING') {
+      await query(
+        `BEGIN TRY
+           BEGIN TRAN;
 
-    if (newStatus === 'SUCCESS' && existingPayment.invoiceId) {
-      await query('UPDATE Invoices SET status = ? WHERE id = ?', ['PAID', existingPayment.invoiceId]);
+           DECLARE @payerUserId INT;
+           DECLARE @adminUserId INT;
+
+           SELECT TOP 1 @payerUserId = userId FROM Students WHERE id = ?;
+           SELECT TOP 1 @adminUserId = id FROM Users WHERE role = 'ADMIN' ORDER BY id ASC;
+
+           IF @payerUserId IS NULL OR @adminUserId IS NULL
+           BEGIN
+             RAISERROR('Payer or admin account not found for transfer.', 16, 1);
+           END
+
+           IF (SELECT balance FROM Users WHERE id = @payerUserId) < ?
+           BEGIN
+             RAISERROR('Insufficient balance to complete payment.', 16, 1);
+           END
+
+           UPDATE Users SET balance = balance - ? WHERE id = @payerUserId;
+           UPDATE Users SET balance = balance + ? WHERE id = @adminUserId;
+
+           UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?;
+
+           IF ? IS NOT NULL
+           BEGIN
+             UPDATE Invoices SET status = ? WHERE id = ?;
+           END
+
+           COMMIT TRAN;
+         END TRY
+         BEGIN CATCH
+           IF @@TRANCOUNT > 0
+             ROLLBACK TRAN;
+
+           DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+           RAISERROR(@Err, 16, 1);
+         END CATCH`,
+        [
+          existingPayment.studentId,
+          Number(existingPayment.amount || 0),
+          Number(existingPayment.amount || 0),
+          Number(existingPayment.amount || 0),
+          'SUCCESS',
+          reference || '',
+          transactionId,
+          existingPayment.invoiceId || null,
+          'PAID',
+          existingPayment.invoiceId || null,
+        ]
+      );
+    } else {
+      await query('UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?', [newStatus, reference || '', transactionId]);
+      if (newStatus === 'SUCCESS' && existingPayment.invoiceId) {
+        await query('UPDATE Invoices SET status = ? WHERE id = ?', ['PAID', existingPayment.invoiceId]);
+      }
     }
 
-    const redirectAfter = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}`;
+    const method = existingPayment?.method || 'BKASH';
+    const redirectAfter = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}&method=${encodeURIComponent(method)}&paymentType=STUDENT`;
     return res.redirect(302, redirectAfter);
   } catch (err) {
     console.error('❌ [PAYMENT REDIRECT CALLBACK] Server error:', err);
@@ -3091,20 +3401,61 @@ app.post('/api/payments/callback/success', async (req, res) => {
 
     console.log('✅ [PAYMENT SUCCESS] Payment found:', payment[0]);
 
-    // Update payment
-    console.log('💾 [PAYMENT SUCCESS] Updating payment to SUCCESS status...');
+    // Update payment + transfer student balance to admin balance atomically
+    console.log('💾 [PAYMENT SUCCESS] Updating payment to SUCCESS status with wallet transfer...');
+    const pendingPayment = payment[0];
     await query(
-      'UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?',
-      ['SUCCESS', reference || '', transaction_id]
-    );
+      `BEGIN TRY
+         BEGIN TRAN;
 
-    // Update invoice status if fully paid
-    const invoiceId = payment[0].invoiceId;
-    if (invoiceId) {
-      console.log('💾 [PAYMENT SUCCESS] Updating invoice status to PAID:', invoiceId);
-      await query('UPDATE Invoices SET status = ? WHERE id = ?', ['PAID', invoiceId]);
-      console.log('✅ [PAYMENT SUCCESS] Invoice updated:', invoiceId);
-    }
+         DECLARE @payerUserId INT;
+         DECLARE @adminUserId INT;
+
+         SELECT TOP 1 @payerUserId = userId FROM Students WHERE id = ?;
+         SELECT TOP 1 @adminUserId = id FROM Users WHERE role = 'ADMIN' ORDER BY id ASC;
+
+         IF @payerUserId IS NULL OR @adminUserId IS NULL
+         BEGIN
+           RAISERROR('Payer or admin account not found for transfer.', 16, 1);
+         END
+
+         IF (SELECT balance FROM Users WHERE id = @payerUserId) < ?
+         BEGIN
+           RAISERROR('Insufficient balance to complete payment.', 16, 1);
+         END
+
+         UPDATE Users SET balance = balance - ? WHERE id = @payerUserId;
+         UPDATE Users SET balance = balance + ? WHERE id = @adminUserId;
+
+         UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?;
+
+         IF ? IS NOT NULL
+         BEGIN
+           UPDATE Invoices SET status = ? WHERE id = ?;
+         END
+
+         COMMIT TRAN;
+       END TRY
+       BEGIN CATCH
+         IF @@TRANCOUNT > 0
+           ROLLBACK TRAN;
+
+         DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+         RAISERROR(@Err, 16, 1);
+       END CATCH`,
+      [
+        pendingPayment.studentId,
+        Number(pendingPayment.amount || 0),
+        Number(pendingPayment.amount || 0),
+        Number(pendingPayment.amount || 0),
+        'SUCCESS',
+        reference || '',
+        transaction_id,
+        pendingPayment.invoiceId || null,
+        'PAID',
+        pendingPayment.invoiceId || null,
+      ]
+    );
 
     console.log('✅ [PAYMENT SUCCESS] Payment processed successfully:', transaction_id);
 
@@ -3228,6 +3579,556 @@ app.get('/api/payments/:id', async (req, res) => {
   } catch (err) {
     console.error('Get payment error:', err);
     res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/staff-payments', async (req, res) => {
+  try {
+    const { staffUserId, status, cycleMonth, cycleYear } = req.query;
+    let sql = `
+      SELECT sp.*, staff.name AS staffName, staff.email AS staffEmail,
+             initiator.name AS initiatedByName
+      FROM StaffPayments sp
+      INNER JOIN Users staff ON sp.staffUserId = staff.id
+      LEFT JOIN Users initiator ON sp.initiatedByUserId = initiator.id
+    `;
+    const params = [];
+
+    if (staffUserId) {
+      sql += ' WHERE sp.staffUserId = ?';
+      params.push(toIntOrDefault(staffUserId, 0));
+    }
+
+    if (status) {
+      sql += params.length > 0 ? ' AND' : ' WHERE';
+      sql += ' sp.status = ?';
+      params.push(String(status).toUpperCase());
+    }
+
+    if (cycleMonth) {
+      sql += params.length > 0 ? ' AND' : ' WHERE';
+      sql += ' sp.cycleMonth = ?';
+      params.push(toIntOrDefault(cycleMonth, 0));
+    }
+
+    if (cycleYear) {
+      sql += params.length > 0 ? ' AND' : ' WHERE';
+      sql += ' sp.cycleYear = ?';
+      params.push(toIntOrDefault(cycleYear, 0));
+    }
+
+    sql += ' ORDER BY sp.created_at DESC';
+    const result = await query(sql, params);
+    res.json(result);
+  } catch (err) {
+    console.error('Get staff payments error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/staff-payments/me', async (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) {
+      return res.status(400).json({ message: 'email is required' });
+    }
+
+    const staffRows = await query("SELECT TOP 1 id, role FROM Users WHERE email = ?", [email]);
+    if (!staffRows || staffRows.length === 0) {
+      return res.status(404).json({ message: 'Staff account not found' });
+    }
+
+    if (!['WARDEN', 'CARETAKER'].includes(staffRows[0].role)) {
+      return res.status(400).json({ message: 'User is not a staff account' });
+    }
+
+    const result = await query(`
+      SELECT sp.*, staff.name AS staffName, staff.email AS staffEmail,
+             initiator.name AS initiatedByName
+      FROM StaffPayments sp
+      INNER JOIN Users staff ON sp.staffUserId = staff.id
+      LEFT JOIN Users initiator ON sp.initiatedByUserId = initiator.id
+      WHERE sp.staffUserId = ?
+      ORDER BY sp.created_at DESC
+    `, [staffRows[0].id]);
+
+    res.json(result);
+  } catch (err) {
+    console.error('Get my staff payments error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/staff-salary-prompts', async (req, res) => {
+  try {
+    const { email } = req.query;
+    let sql = `
+      SELECT p.*, staff.name AS staffName, staff.email AS staffEmail, resolver.name AS resolvedByName
+      FROM StaffSalaryPrompts p
+      INNER JOIN Users staff ON staff.id = p.staffUserId
+      LEFT JOIN Users resolver ON resolver.id = p.resolvedByUserId
+    `;
+    const params = [];
+
+    if (email) {
+      const rows = await query('SELECT TOP 1 id, role FROM Users WHERE email = ?', [email]);
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+
+      const user = rows[0];
+      if (user.role === 'WARDEN' || user.role === 'CARETAKER') {
+        sql += ' WHERE p.staffUserId = ?';
+        params.push(user.id);
+      }
+    }
+
+    sql += ' ORDER BY p.created_at DESC';
+    const result = await query(sql, params);
+    res.json(result || []);
+  } catch (err) {
+    console.error('Get staff salary prompts error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.post('/api/staff-salary-prompts', async (req, res) => {
+  try {
+    const { staffEmail, message } = req.body || {};
+    if (!staffEmail) {
+      return res.status(400).json({ message: 'staffEmail is required' });
+    }
+
+    const staffRows = await query('SELECT TOP 1 id, role FROM Users WHERE email = ?', [staffEmail]);
+    if (!staffRows || staffRows.length === 0) {
+      return res.status(404).json({ message: 'Staff not found' });
+    }
+
+    const staff = staffRows[0];
+    if (!['WARDEN', 'CARETAKER'].includes(staff.role)) {
+      return res.status(400).json({ message: 'User is not staff' });
+    }
+
+    const { month, year } = getCurrentCycle();
+    const alreadyPaidRows = await query(
+      `SELECT TOP 1 id FROM StaffPayments WHERE staffUserId = ? AND cycleMonth = ? AND cycleYear = ? AND status = 'SUCCESS'`,
+      [staff.id, month, year]
+    );
+    if (alreadyPaidRows && alreadyPaidRows.length > 0) {
+      return res.status(400).json({ message: 'Salary already paid for current cycle' });
+    }
+
+    const existingPrompt = await query(
+      `SELECT TOP 1 id FROM StaffSalaryPrompts WHERE staffUserId = ? AND cycleMonth = ? AND cycleYear = ? AND status = 'PENDING'`,
+      [staff.id, month, year]
+    );
+    if (existingPrompt && existingPrompt.length > 0) {
+      return res.status(400).json({ message: 'Prompt already sent for current cycle' });
+    }
+
+    await query(
+      `INSERT INTO StaffSalaryPrompts (staffUserId, cycleMonth, cycleYear, message, status, created_at)
+       VALUES (?, ?, ?, ?, 'PENDING', GETDATE())`,
+      [staff.id, month, year, message || 'Salary pending for this month.']
+    );
+
+    res.status(201).json({ message: 'Prompt sent to admin successfully' });
+  } catch (err) {
+    console.error('Create staff salary prompt error:', err);
+    res.status(500).json({ message: err.message || 'Internal server error' });
+  }
+});
+
+app.post('/api/staff-salary-prompts/:id/resolve', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const resolvedByEmail = req.body?.resolvedByEmail;
+    if (!id || !resolvedByEmail) {
+      return res.status(400).json({ message: 'id and resolvedByEmail are required' });
+    }
+
+    const resolverRows = await query("SELECT TOP 1 id, role FROM Users WHERE email = ?", [resolvedByEmail]);
+    if (!resolverRows || resolverRows.length === 0 || resolverRows[0].role !== 'ADMIN') {
+      return res.status(403).json({ message: 'Only admin can resolve prompts' });
+    }
+
+    await query(
+      "UPDATE StaffSalaryPrompts SET status = 'RESOLVED', resolvedByUserId = ?, resolved_at = GETDATE() WHERE id = ?",
+      [resolverRows[0].id, id]
+    );
+
+    res.json({ message: 'Prompt resolved' });
+  } catch (err) {
+    console.error('Resolve staff salary prompt error:', err);
+    res.status(500).json({ message: err.message || 'Internal server error' });
+  }
+});
+
+app.post('/api/staff-payments/initiate', async (req, res) => {
+  try {
+    const {
+      staffUserId,
+      amount,
+      cycleMonth,
+      cycleYear,
+      method = 'BKASH',
+      initiatedByUserId,
+      notes = '',
+    } = req.body || {};
+
+    const resolvedStaffUserId = toIntOrDefault(staffUserId, 0);
+    const resolvedCycleMonth = toIntOrDefault(cycleMonth, 0);
+    const resolvedCycleYear = toIntOrDefault(cycleYear, 0);
+    let resolvedInitiatedBy = toNullableInt(initiatedByUserId);
+    const resolvedAmount = Number(amount || 0);
+    const resolvedMethod = String(method || 'BKASH').toUpperCase() === 'NAGAD' ? 'NAGAD' : 'BKASH';
+
+    if (!resolvedStaffUserId || !resolvedAmount || !resolvedCycleMonth || !resolvedCycleYear) {
+      return res.status(400).json({ message: 'staffUserId, amount, cycleMonth, and cycleYear are required' });
+    }
+    if (!Number.isFinite(resolvedAmount) || resolvedAmount <= 0) {
+      return res.status(400).json({ message: 'Amount must be a positive number' });
+    }
+    if (resolvedCycleMonth < 1 || resolvedCycleMonth > 12) {
+      return res.status(400).json({ message: 'cycleMonth must be between 1 and 12' });
+    }
+
+    const staffRows = await query('SELECT TOP 1 id, role FROM Users WHERE id = ?', [resolvedStaffUserId]);
+    if (!staffRows || staffRows.length === 0) {
+      return res.status(404).json({ message: 'Staff user not found' });
+    }
+    if (!['WARDEN', 'CARETAKER'].includes(staffRows[0].role)) {
+      return res.status(400).json({ message: 'Target user is not staff' });
+    }
+
+    const salaryRows = await query('SELECT TOP 1 salary FROM StaffProfiles WHERE userId = ?', [resolvedStaffUserId]);
+    const policyAmount = resolveStaffSalary(staffRows[0].role, salaryRows?.[0]?.salary);
+    if (!policyAmount) {
+      return res.status(400).json({ message: 'Salary is not configured for this staff member' });
+    }
+
+    if (!resolvedInitiatedBy) {
+      const adminRows = await query("SELECT TOP 1 id FROM Users WHERE role = 'ADMIN' ORDER BY id ASC");
+      resolvedInitiatedBy = adminRows?.[0]?.id || null;
+    }
+
+    if (!resolvedInitiatedBy) {
+      return res.status(400).json({ message: 'Admin user not found for payment initiation' });
+    }
+
+    const initiatorRows = await query('SELECT TOP 1 id, role FROM Users WHERE id = ?', [resolvedInitiatedBy]);
+    if (!initiatorRows || initiatorRows.length === 0 || initiatorRows[0].role !== 'ADMIN') {
+      return res.status(403).json({ message: 'Only admin can initiate staff salary payments' });
+    }
+
+    const workedRows = await query('SELECT TOP 1 DATEDIFF(day, ISNULL(joinedDate, GETDATE()), GETDATE()) AS workedDays FROM StaffProfiles WHERE userId = ?', [resolvedStaffUserId]);
+    const workedDays = Math.max(0, Number(workedRows?.[0]?.workedDays || 0));
+    if (workedDays < 30) {
+      return res.status(400).json({ message: 'Staff has not completed one month yet' });
+    }
+
+    if (Math.abs(resolvedAmount - policyAmount) > 0.01) {
+      return res.status(400).json({ message: `Amount must match salary policy (${policyAmount})` });
+    }
+
+    const transactionId = `STAFFPAY_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+    await query(
+      `BEGIN TRY
+         BEGIN TRAN;
+
+         IF EXISTS (
+           SELECT 1
+           FROM StaffPayments
+           WHERE staffUserId = ?
+             AND cycleMonth = ?
+             AND cycleYear = ?
+             AND status IN ('PENDING', 'SUCCESS')
+         )
+         BEGIN
+           RAISERROR('Payment cycle already initiated or paid for this staff member.', 16, 1);
+         END
+
+         INSERT INTO StaffPayments (
+           staffUserId,
+           initiatedByUserId,
+           cycleMonth,
+           cycleYear,
+           amount,
+           method,
+           status,
+           transaction_id,
+           notes,
+           created_at
+         )
+         VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, GETDATE());
+
+         COMMIT TRAN;
+       END TRY
+       BEGIN CATCH
+         IF @@TRANCOUNT > 0
+           ROLLBACK TRAN;
+
+         DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+         RAISERROR(@Err, 16, 1);
+       END CATCH`,
+      [
+        resolvedStaffUserId,
+        resolvedCycleMonth,
+        resolvedCycleYear,
+        resolvedStaffUserId,
+        resolvedInitiatedBy,
+        resolvedCycleMonth,
+        resolvedCycleYear,
+        resolvedAmount,
+        resolvedMethod,
+        transactionId,
+        notes || '',
+      ]
+    );
+
+    const returnUrl = `${BACKEND_BASE_URL}/api/staff-payments/callback/redirect`;
+
+    let redirectUrl;
+    try {
+      redirectUrl = await getPaymentProviderRedirectUrl({
+        method: resolvedMethod,
+        transactionId,
+        amount: resolvedAmount,
+        invoiceId: null,
+        studentId: resolvedStaffUserId,
+        returnUrl,
+      });
+      if (!redirectUrl) {
+        throw new Error('Payment provider did not return a redirect URL');
+      }
+    } catch (providerError) {
+      // Demo-safe fallback for local testing without provider credentials.
+      redirectUrl = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}&method=${encodeURIComponent(resolvedMethod)}&paymentType=STAFF`;
+      return res.json({
+        transactionId,
+        redirectUrl,
+        amount: resolvedAmount,
+        method: resolvedMethod,
+        cycleMonth: resolvedCycleMonth,
+        cycleYear: resolvedCycleYear,
+        message: 'Staff payment initialized in demo mode (provider unavailable)',
+      });
+    }
+
+    res.json({
+      transactionId,
+      redirectUrl,
+      amount: resolvedAmount,
+      method: resolvedMethod,
+      cycleMonth: resolvedCycleMonth,
+      cycleYear: resolvedCycleYear,
+      message: 'Staff payment initiated successfully',
+    });
+  } catch (err) {
+    console.error('Staff payment initiate error:', err);
+    res.status(500).json({ message: err.message || 'Internal server error' });
+  }
+});
+
+app.all('/api/staff-payments/callback/redirect', async (req, res) => {
+  try {
+    const payload = req.method === 'GET' ? req.query : req.body;
+    const transactionId = payload.transaction_id || payload.transactionId || payload.invoiceNumber || payload.merchantInvoiceNumber;
+    const rawStatus = (payload.status || payload.result || payload.paymentStatus || '').toString().toUpperCase();
+    const reference = payload.reference || payload.paymentId || payload.tranId || payload.transaction_id || '';
+
+    if (!transactionId) {
+      return res.status(400).send('transaction_id is required');
+    }
+
+    const paymentRows = await query('SELECT TOP 1 * FROM StaffPayments WHERE transaction_id = ?', [transactionId]);
+    if (!paymentRows || paymentRows.length === 0) {
+      return res.status(404).send('Staff payment not found');
+    }
+
+    let newStatus = 'FAILED';
+    if (rawStatus.includes('SUCCESS') || rawStatus.includes('PAID') || rawStatus.includes('COMPLETED') || rawStatus === '1' || rawStatus === 'OK') {
+      newStatus = 'SUCCESS';
+    } else if (rawStatus.includes('PENDING')) {
+      newStatus = 'PENDING';
+    }
+
+    if (newStatus === 'SUCCESS' && String(paymentRows[0]?.status || '').toUpperCase() === 'PENDING') {
+      const payment = paymentRows[0];
+      await query(
+        `BEGIN TRY
+           BEGIN TRAN;
+
+           IF (SELECT balance FROM Users WHERE id = ?) < ?
+           BEGIN
+             RAISERROR('Admin has insufficient balance for salary payment.', 16, 1);
+           END
+
+           UPDATE Users SET balance = balance - ? WHERE id = ?;
+           UPDATE Users SET balance = balance + ? WHERE id = ?;
+
+           UPDATE StaffPayments
+           SET status = ?, reference = ?, paidDate = GETDATE()
+           WHERE transaction_id = ?;
+
+           UPDATE StaffSalaryPrompts
+           SET status = 'RESOLVED', resolvedByUserId = ?, resolved_at = GETDATE()
+           WHERE staffUserId = ? AND cycleMonth = ? AND cycleYear = ? AND status = 'PENDING';
+
+           COMMIT TRAN;
+         END TRY
+         BEGIN CATCH
+           IF @@TRANCOUNT > 0
+             ROLLBACK TRAN;
+
+           DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+           RAISERROR(@Err, 16, 1);
+         END CATCH`,
+        [
+          payment.initiatedByUserId,
+          Number(payment.amount || 0),
+          Number(payment.amount || 0),
+          payment.initiatedByUserId,
+          Number(payment.amount || 0),
+          payment.staffUserId,
+          'SUCCESS',
+          reference || '',
+          transactionId,
+          payment.initiatedByUserId,
+          payment.staffUserId,
+          payment.cycleMonth,
+          payment.cycleYear,
+        ]
+      );
+    } else {
+      await query(
+        'UPDATE StaffPayments SET status = ?, reference = ?, paidDate = CASE WHEN ? = ? THEN GETDATE() ELSE paidDate END WHERE transaction_id = ?',
+        [newStatus, reference || '', newStatus, 'SUCCESS', transactionId]
+      );
+    }
+
+    const method = paymentRows[0]?.method || 'BKASH';
+    const redirectAfter = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}&method=${encodeURIComponent(method)}&paymentType=STAFF`;
+    return res.redirect(302, redirectAfter);
+  } catch (err) {
+    console.error('Staff payment redirect callback error:', err);
+    res.status(500).send('Internal server error');
+  }
+});
+
+app.post('/api/staff-payments/callback/success', async (req, res) => {
+  try {
+    const { transaction_id, reference } = req.body || {};
+    if (!transaction_id) {
+      return res.status(400).json({ message: 'transaction_id is required' });
+    }
+
+    const paymentRows = await query('SELECT TOP 1 * FROM StaffPayments WHERE transaction_id = ? AND status = ?', [transaction_id, 'PENDING']);
+    if (!paymentRows || paymentRows.length === 0) {
+      return res.status(404).json({ message: 'Staff payment not found or already processed' });
+    }
+
+    const payment = paymentRows[0];
+    await query(
+      `BEGIN TRY
+         BEGIN TRAN;
+
+         IF (SELECT balance FROM Users WHERE id = ?) < ?
+         BEGIN
+           RAISERROR('Admin has insufficient balance for salary payment.', 16, 1);
+         END
+
+         UPDATE Users SET balance = balance - ? WHERE id = ?;
+         UPDATE Users SET balance = balance + ? WHERE id = ?;
+
+         UPDATE StaffPayments SET status = ?, reference = ?, paidDate = GETDATE() WHERE transaction_id = ?;
+
+         UPDATE StaffSalaryPrompts
+         SET status = 'RESOLVED', resolvedByUserId = ?, resolved_at = GETDATE()
+         WHERE staffUserId = ? AND cycleMonth = ? AND cycleYear = ? AND status = 'PENDING';
+
+         COMMIT TRAN;
+       END TRY
+       BEGIN CATCH
+         IF @@TRANCOUNT > 0
+           ROLLBACK TRAN;
+
+         DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+         RAISERROR(@Err, 16, 1);
+       END CATCH`,
+      [
+        payment.initiatedByUserId,
+        Number(payment.amount || 0),
+        Number(payment.amount || 0),
+        payment.initiatedByUserId,
+        Number(payment.amount || 0),
+        payment.staffUserId,
+        'SUCCESS',
+        reference || '',
+        transaction_id,
+        payment.initiatedByUserId,
+        payment.staffUserId,
+        payment.cycleMonth,
+        payment.cycleYear,
+      ]
+    );
+
+    res.json({ message: 'Staff payment processed successfully' });
+  } catch (err) {
+    console.error('Staff payment success callback error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  }
+});
+
+app.post('/api/staff-payments/callback/failure', async (req, res) => {
+  try {
+    const { transaction_id } = req.body || {};
+    if (!transaction_id) {
+      return res.status(400).json({ message: 'transaction_id is required' });
+    }
+
+    const paymentRows = await query('SELECT TOP 1 * FROM StaffPayments WHERE transaction_id = ? AND status = ?', [transaction_id, 'PENDING']);
+    if (!paymentRows || paymentRows.length === 0) {
+      return res.status(404).json({ message: 'Staff payment not found or already processed' });
+    }
+
+    await query('UPDATE StaffPayments SET status = ? WHERE transaction_id = ?', ['FAILED', transaction_id]);
+    res.json({ message: 'Staff payment failure recorded' });
+  } catch (err) {
+    console.error('Staff payment failure callback error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  }
+});
+
+app.get('/api/staff-payments/status/:transactionId', async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    if (!transactionId) {
+      return res.status(400).json({ message: 'transactionId is required' });
+    }
+
+    const paymentRows = await query('SELECT TOP 1 * FROM StaffPayments WHERE transaction_id = ?', [transactionId]);
+    if (!paymentRows || paymentRows.length === 0) {
+      return res.status(404).json({ message: 'Staff payment not found' });
+    }
+
+    const record = paymentRows[0];
+    res.json({
+      transactionId: record.transaction_id,
+      staffUserId: record.staffUserId,
+      cycleMonth: record.cycleMonth,
+      cycleYear: record.cycleYear,
+      amount: record.amount,
+      method: record.method,
+      status: record.status,
+      reference: record.reference || null,
+      paidDate: record.paidDate,
+      createdAt: record.created_at,
+    });
+  } catch (err) {
+    console.error('Staff payment status error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
   }
 });
 

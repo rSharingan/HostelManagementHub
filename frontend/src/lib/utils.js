@@ -30,10 +30,11 @@ export const formatDateTime = (date) => {
 }
 
 export const formatCurrency = (amount) => {
-  if (!amount) return '$0.00'
-  return new Intl.NumberFormat('en-US', {
+  if (!amount) return 'Tk 0.00'
+  return new Intl.NumberFormat('en-BD', {
     style: 'currency',
-    currency: 'USD',
+    currency: 'BDT',
+    minimumFractionDigits: 2,
   }).format(amount)
 }
 

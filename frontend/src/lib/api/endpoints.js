@@ -45,6 +45,15 @@ export const API_ENDPOINTS = {
     PAYMENTS_UPDATE: (id) => `/fees/payments/${id}`,
     RENT_STATUS: '/fees/rent-status',
     RENT_PAY: '/fees/rent-pay',
+    STAFF_PAYMENTS_LIST: '/staff-payments',
+    STAFF_PAYMENTS_ME: '/staff-payments/me',
+    STAFF_PAYMENTS_INITIATE: '/staff-payments/initiate',
+    STAFF_PAYMENTS_STATUS: (transactionId) => `/staff-payments/status/${transactionId}`,
+    STAFF_PAYMENTS_CALLBACK_SUCCESS: '/staff-payments/callback/success',
+    STAFF_PAYMENTS_CALLBACK_FAILURE: '/staff-payments/callback/failure',
+    STAFF_SALARY_PROMPTS_LIST: '/staff-salary-prompts',
+    STAFF_SALARY_PROMPTS_CREATE: '/staff-salary-prompts',
+    STAFF_SALARY_PROMPTS_RESOLVE: (id) => `/staff-salary-prompts/${id}/resolve`,
   },
   STAFF: {
     LIST: '/staff',
@@ -71,6 +80,7 @@ export const API_ENDPOINTS = {
   },
   USERS: {
     LIST: '/users',
+    BALANCE: '/users/balance',
   },
   REPORTS: {
     OCCUPANCY: '/reports/occupancy',
