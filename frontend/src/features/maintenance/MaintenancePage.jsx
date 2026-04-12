@@ -177,7 +177,11 @@ export const MaintenancePage = () => {
     }
   }
 
-  const assignableStaff = staff.filter((member) => ['WARDEN', 'CARETAKER'].includes(member.role))
+  const assignableStaff = staff.filter((member) => {
+    const isOperationalRole = ['WARDEN', 'CARETAKER'].includes(member.role)
+    const isAvailable = !member.employmentStatus || member.employmentStatus === 'ACTIVE'
+    return isOperationalRole && isAvailable
+  })
 
   const columns = [
     { header: 'ID', accessorKey: 'id' },

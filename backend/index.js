@@ -270,6 +270,23 @@ function getRowId(row) {
   return row.id ?? row.Id ?? row.ID ?? row.IDENTIFIER ?? null;
 }
 
+function normalizeStaffProfileRow(row) {
+  if (!row) {
+    return row;
+  }
+
+  const normalizedShift = row.shift ?? row.shiftName ?? row.Column7 ?? null;
+  const normalized = { ...row, shift: normalizedShift };
+  if (Object.prototype.hasOwnProperty.call(normalized, 'Column7')) {
+    delete normalized.Column7;
+  }
+  if (Object.prototype.hasOwnProperty.call(normalized, 'shiftName')) {
+    delete normalized.shiftName;
+  }
+
+  return normalized;
+}
+
 async function getRoomById(roomId) {
   const result = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
   return result && result.length > 0 ? result[0] : null;
@@ -435,6 +452,31 @@ async function ensureFeatureTables() {
       )
     END
   `)
+
+  await ensureColumnExists('Students', 'userId', 'userId INT NULL')
+
+  await query(`
+    IF OBJECT_ID('dbo.StaffProfiles', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.StaffProfiles (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        userId INT NOT NULL UNIQUE,
+        phone NVARCHAR(20) NULL,
+        employmentStatus NVARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+        [shift] NVARCHAR(20) NOT NULL DEFAULT 'DAY',
+        specialty NVARCHAR(100) NULL,
+        joinedDate DATE NULL,
+        createdAt DATETIME2 NOT NULL DEFAULT GETDATE(),
+        FOREIGN KEY (userId) REFERENCES dbo.Users(id)
+      )
+    END
+  `)
+
+  await ensureColumnExists('StaffProfiles', 'phone', 'phone NVARCHAR(20) NULL')
+  await ensureColumnExists('StaffProfiles', 'employmentStatus', "employmentStatus NVARCHAR(20) NOT NULL DEFAULT 'ACTIVE'")
+  await ensureColumnExists('StaffProfiles', 'shift', "[shift] NVARCHAR(20) NOT NULL DEFAULT 'DAY'")
+  await ensureColumnExists('StaffProfiles', 'specialty', 'specialty NVARCHAR(100) NULL')
+  await ensureColumnExists('StaffProfiles', 'joinedDate', 'joinedDate DATE NULL')
 
   await query(`
     IF OBJECT_ID('dbo.Rooms', 'U') IS NULL
@@ -669,7 +711,103 @@ async function ensureFeatureTables() {
     UPDATE dbo.Users SET hostelId = 1 WHERE hostelId IS NULL AND role IN ('ADMIN', 'WARDEN', 'ACCOUNTANT', 'CARETAKER')
   `)
 
+  // Ensure every student has a linked STUDENT user for strict 1:1 User->Student mapping.
+  await query(`
+    INSERT INTO dbo.Users (name, email, password, role, hostelId)
+    SELECT s.name,
+           s.email,
+           ISNULL(NULLIF(s.password, ''), 'password'),
+           'STUDENT',
+           NULL
+    FROM dbo.Students s
+    LEFT JOIN dbo.Users u ON u.email = s.email
+    WHERE u.id IS NULL
+      AND s.email IS NOT NULL
+      AND s.email <> ''
+  `)
+
+  await query(`
+    UPDATE s
+    SET s.userId = u.id
+    FROM dbo.Students s
+    INNER JOIN dbo.Users u ON u.email = s.email AND u.role = 'STUDENT'
+    WHERE s.userId IS NULL
+  `)
+
+  await query(`
+    ;WITH DuplicateLinks AS (
+      SELECT id,
+             userId,
+             ROW_NUMBER() OVER (PARTITION BY userId ORDER BY id ASC) AS rn
+      FROM dbo.Students
+      WHERE userId IS NOT NULL
+    )
+    INSERT INTO dbo.Users (name, email, password, role, hostelId)
+    SELECT s.name,
+           CONCAT('student', s.id, '@hostel.local'),
+           ISNULL(NULLIF(s.password, ''), 'password'),
+           'STUDENT',
+           NULL
+    FROM DuplicateLinks d
+    INNER JOIN dbo.Students s ON s.id = d.id
+    WHERE d.rn > 1
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.Users ux WHERE ux.email = CONCAT('student', s.id, '@hostel.local')
+      )
+  `)
+
+  await query(`
+    ;WITH DuplicateLinks AS (
+      SELECT id,
+             userId,
+             ROW_NUMBER() OVER (PARTITION BY userId ORDER BY id ASC) AS rn
+      FROM dbo.Students
+      WHERE userId IS NOT NULL
+    )
+    UPDATE s
+    SET s.userId = u.id
+    FROM DuplicateLinks d
+    INNER JOIN dbo.Students s ON s.id = d.id
+    INNER JOIN dbo.Users u ON u.email = CONCAT('student', s.id, '@hostel.local') AND u.role = 'STUDENT'
+    WHERE d.rn > 1
+  `)
+
+  await query(`
+    INSERT INTO dbo.Users (name, email, password, role, hostelId)
+    SELECT s.name,
+           CONCAT('student', s.id, '@hostel.local'),
+           ISNULL(NULLIF(s.password, ''), 'password'),
+           'STUDENT',
+           NULL
+    FROM dbo.Students s
+    WHERE s.userId IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.Users u WHERE u.email = CONCAT('student', s.id, '@hostel.local')
+      )
+  `)
+
+  await query(`
+    UPDATE s
+    SET s.userId = u.id
+    FROM dbo.Students s
+    INNER JOIN dbo.Users u ON u.email = CONCAT('student', s.id, '@hostel.local') AND u.role = 'STUDENT'
+    WHERE s.userId IS NULL
+  `)
+
+  // Ensure every staff user has exactly one linked profile for strict 1:1 User->Staff mapping.
+  await query(`
+    INSERT INTO dbo.StaffProfiles (userId)
+    SELECT u.id
+    FROM dbo.Users u
+    WHERE u.role IN ('WARDEN', 'CARETAKER')
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.StaffProfiles sp WHERE sp.userId = u.id
+      )
+  `)
+
   await ensureForeignKey('FK_Users_Hostels', 'Users', 'FOREIGN KEY (hostelId) REFERENCES dbo.Hostels(id)')
+  await ensureForeignKey('FK_Students_Users', 'Students', 'FOREIGN KEY (userId) REFERENCES dbo.Users(id)')
+  await ensureForeignKey('FK_StaffProfiles_Users', 'StaffProfiles', 'FOREIGN KEY (userId) REFERENCES dbo.Users(id)')
   await ensureForeignKey('FK_Rooms_Hostels', 'Rooms', 'FOREIGN KEY (hostelId) REFERENCES dbo.Hostels(id)')
   await ensureForeignKey('FK_Beds_Rooms', 'Beds', 'FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)')
   await ensureForeignKey('FK_StayRecords_Students', 'StayRecords', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
@@ -681,6 +819,42 @@ async function ensureFeatureTables() {
   await ensureForeignKey('FK_Maintenance_Students', 'Maintenance', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
   await ensureForeignKey('FK_Maintenance_Staff', 'Maintenance', 'FOREIGN KEY (staffId) REFERENCES dbo.Users(id)')
   await ensureForeignKey('FK_Maintenance_Rooms', 'Maintenance', 'FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)')
+
+  await query(`
+    IF OBJECT_ID('dbo.Students', 'U') IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM sys.indexes
+         WHERE name = 'UX_Students_UserId'
+           AND object_id = OBJECT_ID('dbo.Students')
+       )
+       AND NOT EXISTS (
+         SELECT userId
+         FROM dbo.Students
+         WHERE userId IS NOT NULL
+         GROUP BY userId
+         HAVING COUNT(*) > 1
+       )
+    BEGIN
+      CREATE UNIQUE INDEX UX_Students_UserId
+      ON dbo.Students(userId)
+      WHERE userId IS NOT NULL
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.StaffProfiles', 'U') IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM sys.indexes
+         WHERE name = 'UX_StaffProfiles_UserId'
+           AND object_id = OBJECT_ID('dbo.StaffProfiles')
+       )
+    BEGIN
+      CREATE UNIQUE INDEX UX_StaffProfiles_UserId
+      ON dbo.StaffProfiles(userId)
+    END
+  `)
 
   await seedBedsForAllRooms()
 }
@@ -700,10 +874,15 @@ app.post('/api/auth/signup', async (req, res) => {
       await query('BEGIN TRANSACTION');
       try {
         await query('INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)', [name, email, password, role, null]);
+        const insertedUsers = await query('SELECT TOP 1 id FROM Users WHERE email = ? AND role = ? ORDER BY id DESC', [email, 'STUDENT']);
+        const linkedUserId = insertedUsers?.[0]?.id || null;
+        if (!linkedUserId) {
+          throw new Error('Unable to create linked student user');
+        }
         const registrationNumber = await getNextRegistrationNumber();
         await query(
-          'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-          [name, email, extra.phone || '', registrationNumber, extra.department || '', extra.yearOfStudy || 1, 'ACTIVE', password]
+          'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [name, email, extra.phone || '', registrationNumber, extra.department || '', extra.yearOfStudy || 1, 'ACTIVE', password, linkedUserId]
         );
         await query('COMMIT TRANSACTION');
       } catch (createErr) {
@@ -823,10 +1002,35 @@ app.post('/api/students', async (req, res) => {
 
     await query('BEGIN TRANSACTION');
     try {
+      const existingStudent = await query('SELECT TOP 1 id FROM Students WHERE email = ? ORDER BY id DESC', [payload.email]);
+      if (existingStudent && existingStudent.length > 0) {
+        throw new Error('Student already exists with this email');
+      }
+
+      let linkedUserId = null;
+      const existingUser = await query('SELECT TOP 1 id, role FROM Users WHERE email = ? ORDER BY id DESC', [payload.email]);
+      if (existingUser && existingUser.length > 0) {
+        if (existingUser[0].role !== 'STUDENT') {
+          throw new Error('Email already belongs to a non-student account');
+        }
+        linkedUserId = existingUser[0].id;
+      } else {
+        await query(
+          'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
+          [payload.name, payload.email, payload.password || 'password', 'STUDENT', null]
+        );
+        const insertedUsers = await query('SELECT TOP 1 id FROM Users WHERE email = ? AND role = ? ORDER BY id DESC', [payload.email, 'STUDENT']);
+        linkedUserId = insertedUsers?.[0]?.id || null;
+      }
+
+      if (!linkedUserId) {
+        throw new Error('Unable to create linked student user');
+      }
+
       const registrationNumber = await getNextRegistrationNumber();
       await query(
-        'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [payload.name, payload.email, payload.phone || '', registrationNumber, payload.department || '', yearOfStudy, payload.status || 'ACTIVE', payload.password || 'password']
+        'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [payload.name, payload.email, payload.phone || '', registrationNumber, payload.department || '', yearOfStudy, payload.status || 'ACTIVE', payload.password || 'password', linkedUserId]
       );
       await query('COMMIT TRANSACTION');
     } catch (createErr) {
@@ -847,9 +1051,38 @@ app.put('/api/students/:id', async (req, res) => {
     const id = Number(req.params.id);
     const payload = req.body;
     const yearOfStudy = toIntOrDefault(payload.yearOfStudy, 1);
+
+    const existingRows = await query('SELECT TOP 1 id, userId, email FROM Students WHERE id = ?', [id]);
+    if (!existingRows || existingRows.length === 0) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    let linkedUserId = existingRows[0].userId || null;
+    if (!linkedUserId) {
+      const fallbackUser = await query('SELECT TOP 1 id, role FROM Users WHERE email = ? ORDER BY id DESC', [existingRows[0].email]);
+      if (fallbackUser && fallbackUser.length > 0 && fallbackUser[0].role === 'STUDENT') {
+        linkedUserId = fallbackUser[0].id;
+      }
+    }
+
+    if (linkedUserId) {
+      const conflictingEmail = await query('SELECT TOP 1 id FROM Users WHERE email = ? AND id <> ?', [payload.email, linkedUserId]);
+      if (conflictingEmail && conflictingEmail.length > 0) {
+        return res.status(400).json({ message: 'Email already belongs to another user' });
+      }
+
+      await query('UPDATE Users SET name = ?, email = ?, password = ?, role = ? WHERE id = ?', [
+        payload.name,
+        payload.email,
+        payload.password || 'password',
+        'STUDENT',
+        linkedUserId,
+      ]);
+    }
+
     await query(
       `UPDATE Students
-       SET name = ?, email = ?, phone = ?, department = ?, yearOfStudy = ?, status = ?, password = ?
+       SET name = ?, email = ?, phone = ?, department = ?, yearOfStudy = ?, status = ?, password = ?, userId = ?
        WHERE id = ?`,
       [
         payload.name,
@@ -859,6 +1092,7 @@ app.put('/api/students/:id', async (req, res) => {
         yearOfStudy,
         payload.status || 'ACTIVE',
         payload.password || 'password',
+        linkedUserId,
         id,
       ]
     );
@@ -872,6 +1106,9 @@ app.put('/api/students/:id', async (req, res) => {
 app.delete('/api/students/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
+    const studentRows = await query('SELECT TOP 1 userId FROM Students WHERE id = ?', [id]);
+    const linkedUserId = studentRows?.[0]?.userId || null;
+
     await query('DELETE FROM StayRecords WHERE studentId = ?', [id]);
     await query('DELETE FROM Allocations WHERE studentId = ?', [id]);
     await query('DELETE FROM RoomRequests WHERE studentId = ?', [id]);
@@ -879,6 +1116,11 @@ app.delete('/api/students/:id', async (req, res) => {
     await query('DELETE FROM Payments WHERE studentId = ?', [id]);
     await query('DELETE FROM Invoices WHERE studentId = ?', [id]);
     await query('DELETE FROM Students WHERE id = ?', [id]);
+
+    if (linkedUserId) {
+      await query("DELETE FROM Users WHERE id = ? AND role = 'STUDENT'", [linkedUserId]);
+    }
+
     res.status(204).send();
   } catch (err) {
     console.error('Delete student error:', err);
@@ -1746,8 +1988,14 @@ app.put('/api/fees/payments/:id', async (req, res) => {
 // Staff module routes expected by frontend
 app.get('/api/staff', async (req, res) => {
   try {
-    const result = await query("SELECT id, name, email, role, hostelId FROM Users WHERE role IN ('WARDEN', 'CARETAKER')");
-    res.json(result);
+    const result = await query(`
+      SELECT u.id, u.name, u.email, u.role, u.hostelId,
+             sp.phone, sp.employmentStatus, sp.[shift] AS shiftName, sp.specialty, sp.joinedDate
+      FROM Users u
+      INNER JOIN StaffProfiles sp ON sp.userId = u.id
+      WHERE u.role IN ('WARDEN', 'CARETAKER')
+    `);
+    res.json((result || []).map(normalizeStaffProfileRow));
   } catch (err) {
     console.error('Get staff error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1757,11 +2005,17 @@ app.get('/api/staff', async (req, res) => {
 app.get('/api/staff/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const result = await query('SELECT id, name, email, role, hostelId FROM Users WHERE id = ?', [id]);
+    const result = await query(`
+      SELECT u.id, u.name, u.email, u.role, u.hostelId,
+             sp.phone, sp.employmentStatus, sp.[shift] AS shiftName, sp.specialty, sp.joinedDate
+      FROM Users u
+      INNER JOIN StaffProfiles sp ON sp.userId = u.id
+      WHERE u.id = ?
+    `, [id]);
     if (!result || result.length === 0) {
       return res.status(404).json({ message: 'Not found' });
     }
-    res.json(result[0]);
+    res.json(normalizeStaffProfileRow(result[0]));
   } catch (err) {
     console.error('Get staff member error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1773,6 +2027,13 @@ app.post('/api/staff', async (req, res) => {
     const payload = req.body;
     const role = payload.role === 'CARETAKER' ? 'CARETAKER' : 'WARDEN';
     const hostelId = toIntOrDefault(payload.hostelId, 1);
+    const employmentStatus = payload.employmentStatus === 'INACTIVE' || payload.employmentStatus === 'ON_LEAVE'
+      ? payload.employmentStatus
+      : 'ACTIVE';
+    const shift = payload.shift === 'NIGHT' || payload.shift === 'FLEX' ? payload.shift : 'DAY';
+    const specialty = payload.specialty || null;
+    const phone = payload.phone || null;
+    const joinedDate = payload.joinedDate || null;
 
     if (!payload.name || !payload.email || !payload.password) {
       return res.status(400).json({ message: 'Name, email and password are required' });
@@ -1791,11 +2052,30 @@ app.post('/api/staff', async (req, res) => {
       return res.status(400).json({ message: 'Invalid hostel id' });
     }
 
-    await query(
-      'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
-      [payload.name, payload.email, payload.password || 'password', role, hostelId]
-    );
-    res.status(201).json({ name: payload.name, email: payload.email, role, hostelId });
+    await query('BEGIN TRANSACTION');
+    try {
+      await query(
+        'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
+        [payload.name, payload.email, payload.password || 'password', role, hostelId]
+      );
+
+      const insertedUsers = await query('SELECT TOP 1 id FROM Users WHERE email = ? ORDER BY id DESC', [payload.email]);
+      const linkedUserId = insertedUsers?.[0]?.id || null;
+      if (!linkedUserId) {
+        throw new Error('Unable to create linked staff user');
+      }
+
+      await query(
+        'INSERT INTO StaffProfiles (userId, phone, employmentStatus, [shift], specialty, joinedDate) VALUES (?, ?, ?, ?, ?, ?)',
+        [linkedUserId, phone, employmentStatus, shift, specialty, joinedDate]
+      );
+      await query('COMMIT TRANSACTION');
+    } catch (createErr) {
+      await query('ROLLBACK TRANSACTION');
+      throw createErr;
+    }
+
+    res.status(201).json({ name: payload.name, email: payload.email, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate });
   } catch (err) {
     console.error('Create staff error:', err);
     res.status(500).json({ message: err.message || 'Internal server error' });
@@ -1808,6 +2088,13 @@ app.put('/api/staff/:id', async (req, res) => {
     const payload = req.body;
     const role = payload.role === 'CARETAKER' ? 'CARETAKER' : 'WARDEN';
     const hostelId = toIntOrDefault(payload.hostelId, 1);
+    const employmentStatus = payload.employmentStatus === 'INACTIVE' || payload.employmentStatus === 'ON_LEAVE'
+      ? payload.employmentStatus
+      : 'ACTIVE';
+    const shift = payload.shift === 'NIGHT' || payload.shift === 'FLEX' ? payload.shift : 'DAY';
+    const specialty = payload.specialty || null;
+    const phone = payload.phone || null;
+    const joinedDate = payload.joinedDate || null;
 
     const hostel = await query('SELECT TOP 1 id FROM Hostels WHERE id = ?', [hostelId]);
     if (!hostel || hostel.length === 0) {
@@ -1818,7 +2105,21 @@ app.put('/api/staff/:id', async (req, res) => {
       'UPDATE Users SET name = ?, email = ?, role = ?, hostelId = ? WHERE id = ?',
       [payload.name, payload.email, role, hostelId, id]
     );
-    res.json({ ...payload, id, role, hostelId });
+
+    const profileRows = await query('SELECT TOP 1 id FROM StaffProfiles WHERE userId = ?', [id]);
+    if (!profileRows || profileRows.length === 0) {
+      await query(
+        'INSERT INTO StaffProfiles (userId, phone, employmentStatus, [shift], specialty, joinedDate) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, phone, employmentStatus, shift, specialty, joinedDate]
+      );
+    } else {
+      await query(
+        'UPDATE StaffProfiles SET phone = ?, employmentStatus = ?, [shift] = ?, specialty = ?, joinedDate = ? WHERE userId = ?',
+        [phone, employmentStatus, shift, specialty, joinedDate, id]
+      );
+    }
+
+    res.json({ ...payload, id, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate });
   } catch (err) {
     console.error('Update staff error:', err);
     res.status(500).json({ message: err.message || 'Internal server error' });
@@ -1828,6 +2129,7 @@ app.put('/api/staff/:id', async (req, res) => {
 app.delete('/api/staff/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
+    await query('DELETE FROM StaffProfiles WHERE userId = ?', [id]);
     await query('DELETE FROM Users WHERE id = ?', [id]);
     res.status(204).send();
   } catch (err) {
@@ -2206,10 +2508,16 @@ app.post('/api/allocations', async (req, res) => {
             );
           }
 
+          const linkedUserRows = await query('SELECT TOP 1 id FROM Users WHERE email = ? AND role = ? ORDER BY id DESC', [studentEmail, 'STUDENT']);
+          const linkedUserId = linkedUserRows?.[0]?.id || null;
+          if (!linkedUserId) {
+            throw new Error('Unable to create linked student user');
+          }
+
           const registrationNumber = await getNextRegistrationNumber();
 
           await query(
-            'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
               studentData.name,
               studentEmail,
@@ -2219,6 +2527,7 @@ app.post('/api/allocations', async (req, res) => {
               toIntOrDefault(studentData.yearOfStudy, 1),
               'ACTIVE',
               studentData.password,
+              linkedUserId,
             ]
           );
 
