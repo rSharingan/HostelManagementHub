@@ -7,6 +7,7 @@ import { CountdownTimer } from '../../components/common/CountdownTimer'
 import { useCreatePayment, usePayments, usePayRent, useRentStatus } from './hooks'
 import Input from '../../components/ui/Input'
 import { Button } from '../../components/ui/Button'
+import { Badge } from '../../components/ui/Badge'
 import { formatCurrency } from '../../lib/utils'
 import { toast } from 'sonner'
 import { useAuth } from '../auth/hooks'
@@ -77,10 +78,24 @@ export const PaymentsPage = () => {
     },
     {
       header: 'Date',
-      accessorKey: 'paymentDate',
-      cell: ({ row }) => new Date(row.original.paymentDate).toLocaleDateString(),
+      accessorKey: 'created_at',
+      cell: ({ row }) => row.original.created_at ? new Date(row.original.created_at).toLocaleDateString() : 'N/A',
     },
     { header: 'Method', accessorKey: 'method' },
+    {
+      header: 'Status',
+      accessorKey: 'status',
+      cell: ({ row }) => (
+        <Badge variant={
+          row.original.status === 'SUCCESS' ? 'success' :
+          row.original.status === 'FAILED' ? 'danger' :
+          'warning'
+        }>
+          {row.original.status || 'PENDING'}
+        </Badge>
+      ),
+    },
+    { header: 'Transaction ID', accessorKey: 'transaction_id' },
     { header: 'Reference', accessorKey: 'reference' },
   ]
 

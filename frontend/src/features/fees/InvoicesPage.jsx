@@ -5,7 +5,7 @@ import { Card, CardContent, CardHeader } from '../../components/ui/Card'
 import { DataTable } from '../../components/common/DataTable'
 import Input from '../../components/ui/Input'
 import { Button } from '../../components/ui/Button'
-import { useCreateInvoice, useInvoices, useUpdateInvoice } from './hooks'
+import { useCreateInvoice, useInvoices, useUpdateInvoice, useInitiatePayment } from './hooks'
 import { Badge } from '../../components/ui/Badge'
 import { formatCurrency } from '../../lib/utils'
 import { toast } from 'sonner'
@@ -14,6 +14,7 @@ export const InvoicesPage = () => {
   const { data = [], isLoading } = useInvoices()
   const createInvoice = useCreateInvoice()
   const updateInvoice = useUpdateInvoice()
+  const initiatePayment = useInitiatePayment()
   const [form, setForm] = useState({
     studentId: '',
     amount: '',
@@ -53,6 +54,44 @@ export const InvoicesPage = () => {
     }
   }
 
+  const handlePayNow = async (row) => {
+    try {
+      console.log('🔵 Pay Now clicked for invoice:', row)
+      console.log('📤 Sending payment initiation request with:', {
+        invoiceId: row.id,
+        studentId: row.studentId,
+        amount: row.amount,
+        method: 'BKASH',
+      })
+
+      const result = await initiatePayment.mutateAsync({
+        invoiceId: row.id,
+        studentId: row.studentId,
+        amount: row.amount,
+        method: 'BKASH', // Default to bKash
+      })
+
+      console.log('✅ Payment initiated successfully. Response:', result)
+
+      if (!result || !result.redirectUrl) {
+        console.error('❌ Invalid response: No redirectUrl provided', result)
+        toast.error('Payment initialization failed: No redirect URL provided')
+        return
+      }
+
+      console.log('🔗 Redirecting to payment URL:', result.redirectUrl)
+      // Redirect to payment URL
+      window.location.href = result.redirectUrl
+    } catch (error) {
+      console.error('❌ Payment initiation error:', error)
+      console.error('Error response:', error?.response?.data)
+      console.error('Error message:', error?.message)
+      
+      const errorMessage = error?.response?.data?.message || error?.message || 'Failed to initiate payment'
+      toast.error(errorMessage)
+    }
+  }
+
   const columns = [
     { header: 'ID', accessorKey: 'id' },
     { header: 'Student ID', accessorKey: 'studentId' },
@@ -78,14 +117,26 @@ export const InvoicesPage = () => {
     {
       header: 'Actions',
       cell: ({ row }) => (
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => handleMarkPaid(row.original)}
-          disabled={row.original.status === 'PAID'}
-        >
-          Mark Paid
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => handleMarkPaid(row.original)}
+            disabled={row.original.status === 'PAID'}
+          >
+            Mark Paid
+          </Button>
+          {row.original.status === 'PENDING' && (
+            <Button
+              size="sm"
+              variant="primary"
+              onClick={() => handlePayNow(row.original)}
+              disabled={initiatePayment.isPending}
+            >
+              Pay Now
+            </Button>
+          )}
+        </div>
       ),
     },
   ]
