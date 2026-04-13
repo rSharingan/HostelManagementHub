@@ -154,6 +154,7 @@ export const useInitiateStaffPayment = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: STAFF_PAYMENTS_QUERY_KEY })
       queryClient.invalidateQueries({ queryKey: PAYMENTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['staff'] })
       queryClient.invalidateQueries({ queryKey: STAFF_PROMPTS_QUERY_KEY })
       queryClient.invalidateQueries({ queryKey: USER_BALANCE_QUERY_KEY })
     },
