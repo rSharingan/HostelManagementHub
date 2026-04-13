@@ -36,7 +36,6 @@ export const AllocationsPage = () => {
     email: '',
     password: '',
     phone: '',
-    registrationNumber: '',
     department: '',
     yearOfStudy: '1',
   })
@@ -84,7 +83,6 @@ export const AllocationsPage = () => {
         email: '',
         password: '',
         phone: '',
-        registrationNumber: '',
         department: '',
         yearOfStudy: '1',
       })
@@ -338,12 +336,6 @@ export const AllocationsPage = () => {
                 label="Phone"
                 value={studentForm.phone}
                 onChange={(e) => setStudentForm((prev) => ({ ...prev, phone: e.target.value }))}
-              />
-              <Input
-                name="studentRegistrationNumber"
-                label="Registration Number"
-                value={studentForm.registrationNumber}
-                onChange={(e) => setStudentForm((prev) => ({ ...prev, registrationNumber: e.target.value }))}
               />
               <Input
                 name="studentDepartment"

@@ -6,15 +6,24 @@ import { Button } from '../../components/ui/Button'
 import Input from '../../components/ui/Input'
 import { Card, CardContent, CardHeader } from '../../components/ui/Card'
 
+const COUNTRY_CODES = [
+  { code: '+880', label: 'Bangladesh (+880)' },
+  { code: '+91', label: 'India (+91)' },
+  { code: '+1', label: 'USA/Canada (+1)' },
+  { code: '+44', label: 'UK (+44)' },
+  { code: '+971', label: 'UAE (+971)' },
+]
+
 export const SignupPage = () => {
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     password: '',
     role: '',
-    registrationNumber: '',
     department: '',
-    yearOfStudy: ''
+    yearOfStudy: '',
+    phoneCountryCode: '+880',
+    phoneNumber: '',
   })
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -31,7 +40,16 @@ export const SignupPage = () => {
     setLoading(true)
 
     try {
-      await signup(formData)
+      const payload = { ...formData }
+      if (payload.role === 'STUDENT') {
+        const digitsOnlyPhone = String(payload.phoneNumber || '').replace(/\D/g, '')
+        payload.phone = `${payload.phoneCountryCode}${digitsOnlyPhone}`
+      }
+
+      delete payload.phoneCountryCode
+      delete payload.phoneNumber
+
+      await signup(payload)
       navigate('/dashboard')
     } catch (err) {
       setError(err.response?.data?.message || 'Signup failed')
@@ -99,15 +117,6 @@ export const SignupPage = () => {
               {formData.role === 'STUDENT' && (
                 <div className="space-y-4 animate-slide-in-left">
                   <Input
-                    label="Registration Number"
-                    type="text"
-                    placeholder="REG-001"
-                    value={formData.registrationNumber}
-                    onChange={(e) => handleChange('registrationNumber', e.target.value)}
-                    required
-                  />
-
-                  <Input
                     label="Department"
                     type="text"
                     placeholder="Computer Science"
@@ -115,6 +124,36 @@ export const SignupPage = () => {
                     onChange={(e) => handleChange('department', e.target.value)}
                     required
                   />
+
+                  <div>
+                    <label className="block text-sm font-semibold text-gray-700 dark:text-dark-300 mb-3">
+                      Phone Number
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      <select
+                        value={formData.phoneCountryCode}
+                        onChange={(e) => handleChange('phoneCountryCode', e.target.value)}
+                        className="col-span-1 px-4 py-3 border-2 border-gray-200 dark:border-dark-600 rounded-xl bg-white/80 dark:bg-dark-800/80 backdrop-blur-sm text-gray-900 dark:text-dark-50 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 transition-all duration-200 hover:border-blue-300 dark:hover:border-blue-400"
+                        required
+                      >
+                        {COUNTRY_CODES.map((item) => (
+                          <option key={item.code} value={item.code}>{item.code}</option>
+                        ))}
+                      </select>
+                      <Input
+                        label=""
+                        type="tel"
+                        placeholder="1712345678"
+                        value={formData.phoneNumber}
+                        onChange={(e) => handleChange('phoneNumber', e.target.value)}
+                        className="col-span-2"
+                        required
+                      />
+                    </div>
+                    <p className="text-xs text-gray-500 dark:text-dark-400 mt-2">
+                      Selected country: {COUNTRY_CODES.find((item) => item.code === formData.phoneCountryCode)?.label}
+                    </p>
+                  </div>
 
                   <Input
                     label="Year of Study"

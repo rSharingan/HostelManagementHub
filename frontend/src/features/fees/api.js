@@ -70,3 +70,47 @@ export const payRentAPI = async (payload) => {
   const { data } = await axios.post(API_ENDPOINTS.FEES.RENT_PAY, payload)
   return data
 }
+
+export const getStaffPaymentsAPI = async (params = {}) => {
+  const { data } = await axios.get(API_ENDPOINTS.FEES.STAFF_PAYMENTS_LIST, { params })
+  return data
+}
+
+export const getMyStaffPaymentsAPI = async (email) => {
+  const { data } = await axios.get(API_ENDPOINTS.FEES.STAFF_PAYMENTS_ME, {
+    params: { email },
+  })
+  return data
+}
+
+export const initiateStaffPaymentAPI = async (payload) => {
+  const { data } = await axios.post(API_ENDPOINTS.FEES.STAFF_PAYMENTS_INITIATE, payload)
+  return data
+}
+
+export const getStaffPaymentStatusAPI = async (transactionId) => {
+  const { data } = await axios.get(API_ENDPOINTS.FEES.STAFF_PAYMENTS_STATUS(transactionId))
+  return data
+}
+
+export const getStaffSalaryPromptsAPI = async (params = {}) => {
+  const { data } = await axios.get(API_ENDPOINTS.FEES.STAFF_SALARY_PROMPTS_LIST, { params })
+  return data
+}
+
+export const createStaffSalaryPromptAPI = async (payload) => {
+  const { data } = await axios.post(API_ENDPOINTS.FEES.STAFF_SALARY_PROMPTS_CREATE, payload)
+  return data
+}
+
+export const resolveStaffSalaryPromptAPI = async ({ id, resolvedByEmail }) => {
+  const { data } = await axios.post(API_ENDPOINTS.FEES.STAFF_SALARY_PROMPTS_RESOLVE(id), { resolvedByEmail })
+  return data
+}
+
+export const getUserBalanceAPI = async (email) => {
+  const { data } = await axios.get(API_ENDPOINTS.USERS.BALANCE, {
+    params: { email },
+  })
+  return data
+}

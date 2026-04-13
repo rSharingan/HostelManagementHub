@@ -4,6 +4,8 @@ import {
   getRoomRequestsAPI,
   createRoomRequestAPI,
   approveRoomRequestAPI,
+  disapproveRoomRequestAPI,
+  cancelRoomRequestAPI,
 } from './api'
 
 const ROOM_REQUESTS_QUERY_KEY = ['roomRequests']
@@ -23,6 +25,8 @@ export const useCreateRoomRequest = () => {
     mutationFn: createRoomRequestAPI,
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ROOM_REQUESTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['rooms'] })
+      queryClient.invalidateQueries({ queryKey: ['rent-status'] })
     },
   })
 }
@@ -32,7 +36,7 @@ export const useApproveRoomRequest = () => {
 
   return useMutation({
     mutationFn: approveRoomRequestAPI,
-    onSuccess: (_data, requestId) => {
+    onSuccess: (data, requestId) => {
       queryClient.setQueriesData({ queryKey: ROOM_REQUESTS_QUERY_KEY }, (oldData) => {
         if (!Array.isArray(oldData)) {
           return oldData
@@ -40,12 +44,52 @@ export const useApproveRoomRequest = () => {
 
         return oldData.map((request) =>
           String(request.id) === String(requestId)
-            ? { ...request, status: 'APPROVED' }
+            ? { ...request, status: data?.status || 'APPROVED' }
             : request,
         )
       })
 
       queryClient.invalidateQueries({ queryKey: ROOM_REQUESTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['rooms'] })
+      queryClient.invalidateQueries({ queryKey: ['rent-status'] })
+    },
+  })
+}
+
+export const useCancelRoomRequest = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: cancelRoomRequestAPI,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ROOM_REQUESTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['rooms'] })
+      queryClient.invalidateQueries({ queryKey: ['rent-status'] })
+    },
+  })
+}
+
+export const useDisapproveRoomRequest = () => {
+  const queryClient = useQueryClient()
+
+  return useMutation({
+    mutationFn: disapproveRoomRequestAPI,
+    onSuccess: (data, requestId) => {
+      queryClient.setQueriesData({ queryKey: ROOM_REQUESTS_QUERY_KEY }, (oldData) => {
+        if (!Array.isArray(oldData)) {
+          return oldData
+        }
+
+        return oldData.map((request) =>
+          String(request.id) === String(requestId)
+            ? { ...request, status: data?.status || 'DISAPPROVED' }
+            : request,
+        )
+      })
+
+      queryClient.invalidateQueries({ queryKey: ROOM_REQUESTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['rooms'] })
+      queryClient.invalidateQueries({ queryKey: ['rent-status'] })
     },
   })
 }

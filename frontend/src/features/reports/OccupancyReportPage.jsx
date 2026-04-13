@@ -36,7 +36,7 @@ export const OccupancyReportPage = () => {
                     <th className="border px-4 py-2">Capacity</th>
                     <th className="border px-4 py-2">Occupied</th>
                     <th className="border px-4 py-2">Available</th>
-                    <th className="border px-4 py-2">Report Date</th>
+                    <th className="border px-4 py-2">Last Allocation Time</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -49,7 +49,7 @@ export const OccupancyReportPage = () => {
                       <td className="border px-4 py-2">{row.occupied}</td>
                       <td className="border px-4 py-2">{row.available}</td>
                       <td className="border px-4 py-2">
-                        {new Date(row.reportDate).toLocaleString()}
+                        {row.lastAllocationAt ? new Date(row.lastAllocationAt).toLocaleString() : 'N/A'}
                       </td>
                     </tr>
                   ))}

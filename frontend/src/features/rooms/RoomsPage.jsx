@@ -1,7 +1,7 @@
 // path: src/features/rooms/RoomsPage.jsx
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Edit2, CheckCircle } from 'lucide-react'
+import { Plus, Trash2, Edit2, CheckCircle, X } from 'lucide-react'
 import { useRooms, useDeleteRoom } from './hooks'
 import { PageHeader } from '../../components/common/PageHeader'
 import { DataTable } from '../../components/common/DataTable'
@@ -12,7 +12,8 @@ import { Badge } from '../../components/ui/Badge'
 import { formatCurrency } from '../../lib/utils'
 import { toast } from 'sonner'
 import { useAuth } from '../auth/hooks'
-import { useCreateRoomRequest, useRoomRequests } from '../roomRequests/hooks'
+import { useCreateRoomRequest, useRoomRequests, useCancelRoomRequest } from '../roomRequests/hooks'
+import { useRentStatus } from '../fees/hooks'
 
 export const RoomsPage = () => {
   const navigate = useNavigate()
@@ -21,6 +22,7 @@ export const RoomsPage = () => {
   const { user } = useAuth()
   const [deleteId, setDeleteId] = useState(null)
   const [applyingRoomId, setApplyingRoomId] = useState(null)
+  const [cancellingRequestId, setCancellingRequestId] = useState(null)
   const [optimisticRequestedRoomIds, setOptimisticRequestedRoomIds] = useState([])
   const [filters, setFilters] = useState({
     availableOnly: false,
@@ -30,10 +32,15 @@ export const RoomsPage = () => {
     hasBalcony: false,
   })
   const createRoomRequest = useCreateRoomRequest()
+  const { data: rentStatus } = useRentStatus(
+    { studentEmail: user?.email },
+    user?.role === 'STUDENT',
+  )
   const { data: roomRequests = [] } = useRoomRequests(
     user?.role === 'STUDENT' ? { studentEmail: user?.email } : undefined,
     user?.role === 'STUDENT',
   )
+  const cancelRoomRequest = useCancelRoomRequest()
 
   const requestedRoomIds = useMemo(() => {
     if (user?.role !== 'STUDENT') {
@@ -41,7 +48,7 @@ export const RoomsPage = () => {
     }
 
     const roomIds = roomRequests
-      .filter((request) => request.status === 'PENDING')
+      .filter((request) => String(request.status || '').toUpperCase() === 'PENDING')
       .map((request) => String(request.roomId))
 
     optimisticRequestedRoomIds.forEach((roomId) => {
@@ -53,8 +60,48 @@ export const RoomsPage = () => {
     return new Set(roomIds)
   }, [optimisticRequestedRoomIds, roomRequests, user?.role])
 
+  const latestRequestByRoomId = useMemo(() => {
+    const map = new Map()
+    if (user?.role !== 'STUDENT') {
+      return map
+    }
+
+    // API already returns requests in DESC order; keep first occurrence per room as latest.
+    for (const request of roomRequests) {
+      const roomId = String(request.roomId)
+      if (!map.has(roomId)) {
+        map.set(roomId, {
+          id: request.id,
+          status: String(request.status || '').toUpperCase(),
+        })
+      }
+    }
+
+    return map
+  }, [roomRequests, user?.role])
+
+  const requestStatusByRoomId = useMemo(() => {
+    const map = new Map()
+    if (user?.role !== 'STUDENT') {
+      return map
+    }
+
+    for (const [roomId, info] of latestRequestByRoomId.entries()) {
+      map.set(roomId, info.status)
+    }
+
+    return map
+  }, [latestRequestByRoomId, user?.role])
+
   const filteredRooms = useMemo(() => {
     return rooms.filter((room) => {
+      const seatsLeft = Number(room.seatsLeft ?? room.capacity ?? 0)
+      if (user?.role === 'STUDENT' && seatsLeft <= 0) {
+        return false
+      }
+      if (user?.role === 'STUDENT' && rentStatus?.hasActiveAllocation && String(rentStatus.roomId) === String(room.id)) {
+        return false
+      }
       if (filters.availableOnly && room.status !== 'AVAILABLE') {
         return false
       }
@@ -72,7 +119,7 @@ export const RoomsPage = () => {
       }
       return true
     })
-  }, [filters, rooms])
+  }, [filters, rentStatus?.hasActiveAllocation, rentStatus?.roomId, rooms, user?.role])
 
   const handleDelete = async () => {
     try {
@@ -99,6 +146,18 @@ export const RoomsPage = () => {
       toast.error(error?.response?.data?.message || 'Failed to apply for room')
     } finally {
       setApplyingRoomId(null)
+    }
+  }
+
+  const handleCancelRequest = async (requestId) => {
+    try {
+      setCancellingRequestId(requestId)
+      await cancelRoomRequest.mutateAsync(requestId)
+      toast.success('Room request cancelled successfully')
+    } catch (error) {
+      toast.error(error?.response?.data?.message || 'Failed to cancel room request')
+    } finally {
+      setCancellingRequestId(null)
     }
   }
 
@@ -192,6 +251,9 @@ export const RoomsPage = () => {
         const seatsLeft = Number(row.original.seatsLeft ?? row.original.capacity ?? 0)
         const isAvailable = seatsLeft > 0
         const isRequested = requestedRoomIds.has(String(row.original.id))
+        const requestStatus = requestStatusByRoomId.get(String(row.original.id))
+        const hasActiveAllocation = Boolean(rentStatus?.hasActiveAllocation)
+        const isCurrentRoom = hasActiveAllocation && String(rentStatus?.roomId) === String(row.original.id)
         
         if (isAdmin) {
           return (
@@ -213,12 +275,34 @@ export const RoomsPage = () => {
               </Button>
             </div>
           )
-        } else {
+        } else if (user?.role === 'STUDENT') {
           // Student view
+          const latestRequest = latestRequestByRoomId.get(String(row.original.id))
+          const pendingRequestId = latestRequest?.status === 'PENDING' ? latestRequest.id : null
           return (
             <div className="flex gap-2">
-              {isRequested ? (
+              {requestStatus === 'APPROVED_WAITING_SHIFT' ? (
+                <Badge variant="warning">Approved - Waiting Shift</Badge>
+              ) : requestStatus === 'APPROVED' ? (
+                <Badge variant="success">Approved</Badge>
+              ) : requestStatus === 'PENDING' ? (
+                <>
+                  <Badge variant="warning">Pending Approval</Badge>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCancelRequest(pendingRequestId)}
+                    disabled={!pendingRequestId || cancellingRequestId === pendingRequestId || cancelRoomRequest.isPending}
+                    className="gap-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                  >
+                    <X size={16} />
+                    Cancel Request
+                  </Button>
+                </>
+              ) : isRequested ? (
                 <Badge variant="warning">Requested</Badge>
+              ) : isCurrentRoom ? (
+                <Badge variant="secondary">Current Room</Badge>
               ) : isAvailable ? (
                 <Button
                   variant="default"
@@ -235,6 +319,8 @@ export const RoomsPage = () => {
               )}
             </div>
           )
+        } else {
+          return <span className="text-gray-500 dark:text-dark-400 text-sm">View only</span>
         }
       },
     },
@@ -244,7 +330,7 @@ export const RoomsPage = () => {
     <div>
       <PageHeader
         title="Rooms"
-        description={user?.role === 'ADMIN' ? "Manage hostel rooms" : "Available rooms for application"}
+        description={user?.role === 'ADMIN' ? 'Manage hostel rooms' : user?.role === 'STUDENT' ? 'Available rooms for application' : 'View hostel rooms'}
         breadcrumbs={[
           { label: 'Dashboard', href: '/dashboard' },
           { label: 'Rooms' },
@@ -271,6 +357,23 @@ export const RoomsPage = () => {
         </div>
       ) : (
         <>
+          {user?.role === 'STUDENT' && (
+            <div className="mb-4 p-4 rounded-lg border border-sky-200 bg-sky-50 dark:border-sky-900 dark:bg-sky-950/20">
+              <p className="text-sm font-semibold text-sky-800 dark:text-sky-200">Your current allocation</p>
+              <p className="text-sm text-sky-800/90 dark:text-sky-300 mt-1">
+                Room: {rentStatus?.roomNumber || 'Not allocated'} | Bed: {rentStatus?.bedNumber ? `Bed ${rentStatus.bedNumber}` : 'N/A'}
+              </p>
+              <p className="text-sm text-sky-800/90 dark:text-sky-300">
+                Monthly rent: {formatCurrency(rentStatus?.monthlyRent || 0)} | Balance: {formatCurrency(rentStatus?.currentBalance || 0)}
+              </p>
+              <p className="text-sm mt-2 text-sky-900 dark:text-sky-100">
+                {rentStatus?.canRequestRoomChange
+                  ? 'Room change is available now.'
+                  : `Room change will unlock in ${rentStatus?.daysUntilRoomChangeAllowed || 0} day(s).`}
+              </p>
+            </div>
+          )}
+
           <div className="mb-4 p-4 border border-gray-200 dark:border-dark-700 rounded-lg">
             <p className="text-sm font-medium text-gray-700 dark:text-dark-300 mb-3">Filter Rooms</p>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-3 text-sm">

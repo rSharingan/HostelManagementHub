@@ -12,11 +12,21 @@ import {
   initiatePaymentAPI,
   getRentStatusAPI,
   payRentAPI,
+  getStaffPaymentsAPI,
+  getMyStaffPaymentsAPI,
+  initiateStaffPaymentAPI,
+  getStaffSalaryPromptsAPI,
+  createStaffSalaryPromptAPI,
+  resolveStaffSalaryPromptAPI,
+  getUserBalanceAPI,
 } from './api'
 
 const INVOICES_QUERY_KEY = ['invoices']
 const PAYMENTS_QUERY_KEY = ['payments']
 const RENT_QUERY_KEY = ['rent-status']
+const STAFF_PAYMENTS_QUERY_KEY = ['staff-payments']
+const STAFF_PROMPTS_QUERY_KEY = ['staff-salary-prompts']
+const USER_BALANCE_QUERY_KEY = ['user-balance']
 
 // Invoices
 export const useInvoices = (params) => {
@@ -118,5 +128,71 @@ export const usePayRent = () => {
       queryClient.invalidateQueries({ queryKey: RENT_QUERY_KEY })
       queryClient.invalidateQueries({ queryKey: INVOICES_QUERY_KEY })
     },
+  })
+}
+
+export const useStaffPayments = (params, enabled = true) => {
+  return useQuery({
+    queryKey: [...STAFF_PAYMENTS_QUERY_KEY, params],
+    queryFn: () => getStaffPaymentsAPI(params),
+    enabled,
+  })
+}
+
+export const useMyStaffPayments = (email, enabled = true) => {
+  return useQuery({
+    queryKey: [...STAFF_PAYMENTS_QUERY_KEY, 'me', email],
+    queryFn: () => getMyStaffPaymentsAPI(email),
+    enabled,
+  })
+}
+
+export const useInitiateStaffPayment = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: initiateStaffPaymentAPI,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: STAFF_PAYMENTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: PAYMENTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: ['staff'] })
+      queryClient.invalidateQueries({ queryKey: STAFF_PROMPTS_QUERY_KEY })
+      queryClient.invalidateQueries({ queryKey: USER_BALANCE_QUERY_KEY })
+    },
+  })
+}
+
+export const useStaffSalaryPrompts = (params, enabled = true) => {
+  return useQuery({
+    queryKey: [...STAFF_PROMPTS_QUERY_KEY, params],
+    queryFn: () => getStaffSalaryPromptsAPI(params),
+    enabled,
+  })
+}
+
+export const useCreateStaffSalaryPrompt = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: createStaffSalaryPromptAPI,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: STAFF_PROMPTS_QUERY_KEY })
+    },
+  })
+}
+
+export const useResolveStaffSalaryPrompt = () => {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: resolveStaffSalaryPromptAPI,
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: STAFF_PROMPTS_QUERY_KEY })
+    },
+  })
+}
+
+export const useUserBalance = (email, enabled = true) => {
+  return useQuery({
+    queryKey: [...USER_BALANCE_QUERY_KEY, email],
+    queryFn: () => getUserBalanceAPI(email),
+    enabled: enabled && Boolean(email),
   })
 }

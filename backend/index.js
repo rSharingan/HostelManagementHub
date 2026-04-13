@@ -7,6 +7,19 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || 'http://localhost:5173';
 const BACKEND_BASE_URL = process.env.BACKEND_BASE_URL || `http://localhost:${PORT}`;
+const CARETAKER_FIXED_SALARY = Number(process.env.CARETAKER_FIXED_SALARY || 10000);
+const WARDEN_FIXED_SALARY = Number(process.env.WARDEN_FIXED_SALARY || 20000);
+const ROOM_CHANGE_MIN_DAYS = 31;
+const SHARED_BASE_RENT = Number(process.env.SHARED_BASE_RENT || 2000);
+const SINGLE_BASE_RENT = Number(process.env.SINGLE_BASE_RENT || 4000);
+const INITIAL_BALANCE_DEFAULT = Number(process.env.INITIAL_BALANCE_DEFAULT || 10000);
+const INITIAL_BALANCE_ADMIN = Number(process.env.INITIAL_BALANCE_ADMIN || 100000);
+const ROOM_ATTRIBUTE_SURCHARGES = {
+  hasAC: Number(process.env.RENT_AC_SURCHARGE || 1200),
+  hasWifi: Number(process.env.RENT_WIFI_SURCHARGE || 300),
+  hasBalcony: Number(process.env.RENT_BALCONY_SURCHARGE || 500),
+  hasAttachedBathroom: Number(process.env.RENT_ATTACHED_BATH_SURCHARGE || 800),
+};
 
 const BKASH_SANDBOX_BASE_URL = process.env.BKASH_SANDBOX_BASE_URL || 'https://checkout.sandbox.bka.sh/v1.2.0-beta';
 const BKASH_SANDBOX_TOKEN_URL = process.env.BKASH_SANDBOX_TOKEN_URL || `${BKASH_SANDBOX_BASE_URL}/tokenized/checkout/token/grant?grant_type=client_credentials`;
@@ -270,6 +283,54 @@ function getRowId(row) {
   return row.id ?? row.Id ?? row.ID ?? row.IDENTIFIER ?? null;
 }
 
+function getCurrentCycle() {
+  const now = new Date();
+  return { month: now.getMonth() + 1, year: now.getFullYear() };
+}
+
+function resolveStaffSalary(role) {
+  const normalizedRole = String(role || '').toUpperCase();
+  if (normalizedRole === 'CARETAKER') {
+    return CARETAKER_FIXED_SALARY;
+  }
+  if (normalizedRole === 'WARDEN') {
+    return WARDEN_FIXED_SALARY;
+  }
+
+  return 0;
+}
+
+async function getUserRoleById(userId) {
+  const resolvedUserId = toNullableInt(userId);
+  if (!resolvedUserId) {
+    return null;
+  }
+
+  const result = await query('SELECT TOP 1 id, role FROM Users WHERE id = ?', [resolvedUserId]);
+  return result && result.length > 0 ? result[0] : null;
+}
+
+function normalizeStaffProfileRow(row) {
+  if (!row) {
+    return row;
+  }
+
+  const normalizedShift = row.shift ?? row.shiftName ?? row.Column7 ?? null;
+  const normalized = {
+    ...row,
+    shift: normalizedShift,
+    salary: resolveStaffSalary(row.role, row.salary),
+  };
+  if (Object.prototype.hasOwnProperty.call(normalized, 'Column7')) {
+    delete normalized.Column7;
+  }
+  if (Object.prototype.hasOwnProperty.call(normalized, 'shiftName')) {
+    delete normalized.shiftName;
+  }
+
+  return normalized;
+}
+
 async function getRoomById(roomId) {
   const result = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
   return result && result.length > 0 ? result[0] : null;
@@ -290,15 +351,132 @@ async function getActiveAllocationForStudent(studentId) {
   }
 
   const result = await query(
-    `SELECT TOP 1 a.*, r.roomNumber, r.rentalCost, r.id AS resolvedRoomId
+    `SELECT TOP 1 a.*, r.roomNumber, r.rentalCost, r.id AS resolvedRoomId,
+            b.bedNumber
      FROM Allocations a
      LEFT JOIN Rooms r ON a.roomId = r.id
+     LEFT JOIN Beds b ON a.bedId = b.id
      WHERE a.studentId = ? AND a.status = 'ACTIVE'
      ORDER BY a.checkInDate DESC, a.id DESC`,
     [studentId]
   );
 
   return result && result.length > 0 ? result[0] : null;
+}
+
+async function getRoomChangeEligibility(studentId, allocation = null) {
+  const activeAllocation = allocation || await getActiveAllocationForStudent(studentId);
+  if (!activeAllocation) {
+    return {
+      hasActiveAllocation: false,
+      canRequestRoomChange: true,
+      daysUsed: 0,
+      daysUntilRoomChangeAllowed: 0,
+      roomChangeEligibleAt: null,
+    };
+  }
+
+  const daysRow = await query('SELECT DATEDIFF(day, ?, GETDATE()) AS daysUsed', [activeAllocation.checkInDate]);
+  const daysUsed = Math.max(0, Number(daysRow?.[0]?.daysUsed || 0));
+  const daysUntilRoomChangeAllowed = Math.max(0, ROOM_CHANGE_MIN_DAYS - daysUsed);
+  const roomChangeEligibleAt = new Date(activeAllocation.checkInDate);
+  roomChangeEligibleAt.setDate(roomChangeEligibleAt.getDate() + ROOM_CHANGE_MIN_DAYS);
+
+  return {
+    hasActiveAllocation: true,
+    canRequestRoomChange: daysUntilRoomChangeAllowed === 0,
+    daysUsed,
+    daysUntilRoomChangeAllowed,
+    roomChangeEligibleAt,
+  };
+}
+
+function normalizeRoomType(type) {
+  const normalized = String(type || '').trim().toUpperCase();
+  if (!normalized) {
+    return 'SHARED';
+  }
+  if (['SINGLE', 'PRIVATE'].includes(normalized)) {
+    return 'SINGLE';
+  }
+  return 'SHARED';
+}
+
+function calculateRoomRentFromAttributes({ type, hasAC, hasWifi, hasBalcony, hasAttachedBathroom }) {
+  const roomType = normalizeRoomType(type);
+  let rent = roomType === 'SINGLE' ? SINGLE_BASE_RENT : SHARED_BASE_RENT;
+  if (toBit(hasAC, 0) === 1) rent += ROOM_ATTRIBUTE_SURCHARGES.hasAC;
+  if (toBit(hasWifi, 0) === 1) rent += ROOM_ATTRIBUTE_SURCHARGES.hasWifi;
+  if (toBit(hasBalcony, 0) === 1) rent += ROOM_ATTRIBUTE_SURCHARGES.hasBalcony;
+  if (toBit(hasAttachedBathroom, 0) === 1) rent += ROOM_ATTRIBUTE_SURCHARGES.hasAttachedBathroom;
+  return rent;
+}
+
+function getInitialBalanceByRole(role) {
+  return String(role || '').toUpperCase() === 'ADMIN' ? INITIAL_BALANCE_ADMIN : INITIAL_BALANCE_DEFAULT;
+}
+
+async function getReservedSeatCountForRoom(roomId, excludeRequestId = null) {
+  let sqlText = `
+    SELECT COUNT(*) AS count
+    FROM RoomRequests
+    WHERE roomId = ?
+      AND status IN ('PENDING', 'APPROVED_WAITING_SHIFT')`;
+  const params = [roomId];
+
+  if (excludeRequestId !== null && excludeRequestId !== undefined) {
+    sqlText += ' AND id <> ?';
+    params.push(excludeRequestId);
+  }
+
+  const rows = await query(sqlText, params);
+  return Math.max(0, Number(rows?.[0]?.count || 0));
+}
+
+async function recalculateRoomRents() {
+  const rooms = await query('SELECT id, type, hasAC, hasWifi, hasBalcony, hasAttachedBathroom, rentalCost FROM Rooms');
+  for (const room of rooms || []) {
+    const computedRent = calculateRoomRentFromAttributes(room);
+    const currentRent = Number(room.rentalCost || 0);
+    if (currentRent !== computedRent) {
+      await query('UPDATE Rooms SET rentalCost = ? WHERE id = ?', [computedRent, room.id]);
+    }
+  }
+}
+
+async function getNextRegistrationNumber() {
+  const result = await query(`
+    SELECT ISNULL(
+      MAX(
+        TRY_CAST(
+          CASE
+            WHEN UPPER(registrationNumber) LIKE 'REG%'
+              AND PATINDEX('%[0-9]%', registrationNumber) > 0
+            THEN SUBSTRING(registrationNumber, PATINDEX('%[0-9]%', registrationNumber), LEN(registrationNumber))
+            ELSE NULL
+          END AS INT
+        )
+      ),
+      0
+    ) AS maxReg
+    FROM Students WITH (UPDLOCK, HOLDLOCK)
+  `);
+
+  const maxReg = Number(result?.[0]?.maxReg || 0);
+  return `REG-${maxReg + 1}`;
+}
+
+async function normalizeStudentRegistrationNumbers() {
+  await query(`
+    ;WITH OrderedStudents AS (
+      SELECT id, ROW_NUMBER() OVER (ORDER BY id ASC) AS rn
+      FROM Students
+    )
+    UPDATE s
+    SET registrationNumber = CONCAT('REG-', os.rn)
+    FROM Students s
+    INNER JOIN OrderedStudents os ON os.id = s.id
+  `);
 }
 
 async function ensureBedsForRoom(roomId, capacity) {
@@ -333,12 +511,9 @@ async function syncRoomStatus(roomId) {
 
   const occupiedBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [roomId, 'OCCUPIED']);
   const occupancy = Number(occupiedBeds?.[0]?.count || 0);
-  const newStatus = occupancy >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
+  const reservedSeats = await getReservedSeatCountForRoom(roomId);
+  const newStatus = (occupancy + reservedSeats) >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
   await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
-
-  if (newStatus === 'OCCUPIED') {
-    await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
-  }
 }
 
 async function seedBedsForAllRooms() {
@@ -383,6 +558,50 @@ async function ensureFeatureTables() {
   `)
 
   await ensureColumnExists('Users', 'hostelId', 'hostelId INT NULL')
+  await ensureColumnExists('Users', 'balance', `balance DECIMAL(12,2) NOT NULL DEFAULT ${INITIAL_BALANCE_DEFAULT}`)
+
+  await query(`
+    IF NOT EXISTS (
+      SELECT 1
+      FROM sys.default_constraints dc
+      INNER JOIN sys.columns c ON c.default_object_id = dc.object_id
+      INNER JOIN sys.tables t ON t.object_id = c.object_id
+      WHERE t.name = 'Users'
+        AND c.name = 'balance'
+        AND dc.definition LIKE '%10000%'
+        AND dc.definition NOT LIKE '%100000%'
+    )
+    BEGIN
+      DECLARE @dcName NVARCHAR(200);
+      SELECT TOP 1 @dcName = dc.name
+      FROM sys.default_constraints dc
+      INNER JOIN sys.columns c ON c.default_object_id = dc.object_id
+      INNER JOIN sys.tables t ON t.object_id = c.object_id
+      WHERE t.name = 'Users'
+        AND c.name = 'balance';
+
+      IF @dcName IS NOT NULL
+      BEGIN
+        DECLARE @dropSql NVARCHAR(400);
+        SET @dropSql = N'ALTER TABLE dbo.Users DROP CONSTRAINT ' + QUOTENAME(@dcName);
+        EXEC sp_executesql @dropSql;
+      END
+
+      ALTER TABLE dbo.Users
+      ADD CONSTRAINT DF_Users_balance DEFAULT (10000) FOR balance;
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.SchemaMigrations', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.SchemaMigrations (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        migrationKey NVARCHAR(150) NOT NULL UNIQUE,
+        appliedAt DATETIME2 NOT NULL DEFAULT GETDATE()
+      )
+    END
+  `)
 
   await query(`
     IF OBJECT_ID('dbo.Students', 'U') IS NULL
@@ -400,6 +619,61 @@ async function ensureFeatureTables() {
       )
     END
   `)
+
+  await ensureColumnExists('Students', 'userId', 'userId INT NULL')
+
+  await query(`
+    IF OBJECT_ID('dbo.StaffProfiles', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.StaffProfiles (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        userId INT NOT NULL UNIQUE,
+        phone NVARCHAR(20) NULL,
+        employmentStatus NVARCHAR(20) NOT NULL DEFAULT 'ACTIVE',
+        [shift] NVARCHAR(20) NOT NULL DEFAULT 'DAY',
+        specialty NVARCHAR(100) NULL,
+        salary DECIMAL(10,2) NULL,
+        joinedDate DATE NULL,
+        createdAt DATETIME2 NOT NULL DEFAULT GETDATE(),
+        FOREIGN KEY (userId) REFERENCES dbo.Users(id)
+      )
+    END
+  `)
+
+  await ensureColumnExists('StaffProfiles', 'phone', 'phone NVARCHAR(20) NULL')
+  await ensureColumnExists('StaffProfiles', 'employmentStatus', "employmentStatus NVARCHAR(20) NOT NULL DEFAULT 'ACTIVE'")
+  await ensureColumnExists('StaffProfiles', 'shift', "[shift] NVARCHAR(20) NOT NULL DEFAULT 'DAY'")
+  await ensureColumnExists('StaffProfiles', 'specialty', 'specialty NVARCHAR(100) NULL')
+  await ensureColumnExists('StaffProfiles', 'salary', 'salary DECIMAL(10,2) NULL')
+  await ensureColumnExists('StaffProfiles', 'joinedDate', 'joinedDate DATE NULL')
+
+  await query(`
+    IF OBJECT_ID('dbo.StaffSalaryPrompts', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.StaffSalaryPrompts (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        staffUserId INT NOT NULL,
+        cycleMonth INT NOT NULL,
+        cycleYear INT NOT NULL,
+        message NVARCHAR(255) NULL,
+        status NVARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        created_at DATETIME2 NOT NULL DEFAULT GETDATE(),
+        resolvedByUserId INT NULL,
+        resolved_at DATETIME2 NULL,
+        FOREIGN KEY (staffUserId) REFERENCES dbo.Users(id),
+        FOREIGN KEY (resolvedByUserId) REFERENCES dbo.Users(id)
+      )
+    END
+  `)
+
+  await ensureColumnExists('StaffSalaryPrompts', 'staffUserId', 'staffUserId INT NOT NULL')
+  await ensureColumnExists('StaffSalaryPrompts', 'cycleMonth', 'cycleMonth INT NOT NULL DEFAULT MONTH(GETDATE())')
+  await ensureColumnExists('StaffSalaryPrompts', 'cycleYear', 'cycleYear INT NOT NULL DEFAULT YEAR(GETDATE())')
+  await ensureColumnExists('StaffSalaryPrompts', 'message', 'message NVARCHAR(255) NULL')
+  await ensureColumnExists('StaffSalaryPrompts', 'status', "status NVARCHAR(20) NOT NULL DEFAULT 'PENDING'")
+  await ensureColumnExists('StaffSalaryPrompts', 'created_at', 'created_at DATETIME2 NOT NULL DEFAULT GETDATE()')
+  await ensureColumnExists('StaffSalaryPrompts', 'resolvedByUserId', 'resolvedByUserId INT NULL')
+  await ensureColumnExists('StaffSalaryPrompts', 'resolved_at', 'resolved_at DATETIME2 NULL')
 
   await query(`
     IF OBJECT_ID('dbo.Rooms', 'U') IS NULL
@@ -544,6 +818,11 @@ async function ensureFeatureTables() {
   await ensureColumnExists('Maintenance', 'studentApprovalStatus', "studentApprovalStatus NVARCHAR(50) NOT NULL DEFAULT 'PENDING'")
   await ensureColumnExists('Maintenance', 'studentApprovedById', 'studentApprovedById INT NULL')
   await ensureColumnExists('Maintenance', 'studentApprovedDate', 'studentApprovedDate DATETIME2 NULL')
+  await ensureColumnExists('Maintenance', 'caretakerApprovalStatus', "caretakerApprovalStatus NVARCHAR(50) NOT NULL DEFAULT 'PENDING'")
+  await ensureColumnExists('Maintenance', 'caretakerApprovedById', 'caretakerApprovedById INT NULL')
+  await ensureColumnExists('Maintenance', 'caretakerApprovedDate', 'caretakerApprovedDate DATETIME2 NULL')
+  await ensureColumnExists('Maintenance', 'closedById', 'closedById INT NULL')
+  await ensureColumnExists('Maintenance', 'closedDate', 'closedDate DATETIME2 NULL')
 
   await query(`
     IF OBJECT_ID('dbo.Payments', 'U') IS NULL
@@ -559,6 +838,42 @@ async function ensureFeatureTables() {
       )
     END
   `)
+
+  await query(`
+    IF OBJECT_ID('dbo.StaffPayments', 'U') IS NULL
+    BEGIN
+      CREATE TABLE dbo.StaffPayments (
+        id INT IDENTITY(1,1) PRIMARY KEY,
+        staffUserId INT NOT NULL,
+        initiatedByUserId INT NULL,
+        cycleMonth INT NOT NULL,
+        cycleYear INT NOT NULL,
+        amount DECIMAL(10,2) NOT NULL,
+        method NVARCHAR(20) NOT NULL DEFAULT 'BKASH',
+        status NVARCHAR(20) NOT NULL DEFAULT 'PENDING',
+        transaction_id NVARCHAR(100) NULL,
+        reference NVARCHAR(150) NULL,
+        paidDate DATETIME2 NULL,
+        created_at DATETIME2 NOT NULL DEFAULT GETDATE(),
+        notes NVARCHAR(255) NULL,
+        FOREIGN KEY (staffUserId) REFERENCES dbo.Users(id),
+        FOREIGN KEY (initiatedByUserId) REFERENCES dbo.Users(id)
+      )
+    END
+  `)
+
+  await ensureColumnExists('StaffPayments', 'staffUserId', 'staffUserId INT NOT NULL')
+  await ensureColumnExists('StaffPayments', 'initiatedByUserId', 'initiatedByUserId INT NULL')
+  await ensureColumnExists('StaffPayments', 'cycleMonth', 'cycleMonth INT NOT NULL DEFAULT 1')
+  await ensureColumnExists('StaffPayments', 'cycleYear', 'cycleYear INT NOT NULL DEFAULT YEAR(GETDATE())')
+  await ensureColumnExists('StaffPayments', 'amount', 'amount DECIMAL(10,2) NOT NULL DEFAULT 0')
+  await ensureColumnExists('StaffPayments', 'method', "method NVARCHAR(20) NOT NULL DEFAULT 'BKASH'")
+  await ensureColumnExists('StaffPayments', 'status', "status NVARCHAR(20) NOT NULL DEFAULT 'PENDING'")
+  await ensureColumnExists('StaffPayments', 'transaction_id', 'transaction_id NVARCHAR(100) NULL')
+  await ensureColumnExists('StaffPayments', 'reference', 'reference NVARCHAR(150) NULL')
+  await ensureColumnExists('StaffPayments', 'paidDate', 'paidDate DATETIME2 NULL')
+  await ensureColumnExists('StaffPayments', 'created_at', 'created_at DATETIME2 NOT NULL DEFAULT GETDATE()')
+  await ensureColumnExists('StaffPayments', 'notes', 'notes NVARCHAR(255) NULL')
 
   await ensureColumnExists('Payments', 'status', "status NVARCHAR(20) NOT NULL DEFAULT 'PENDING'")
   await ensureColumnExists('Payments', 'transaction_id', 'transaction_id NVARCHAR(100) NULL')
@@ -582,13 +897,39 @@ async function ensureFeatureTables() {
     END
   `)
 
+  // One-time-safe normalization so existing mixed/manual values become sequential REG-1..REG-n.
+  // This updates Students only and does not delete users or break table relationships.
+  await normalizeStudentRegistrationNumbers()
+
+  await query(`
+    IF OBJECT_ID('dbo.Students', 'U') IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM sys.indexes
+         WHERE name = 'UX_Students_RegistrationNumber'
+           AND object_id = OBJECT_ID('dbo.Students')
+       )
+       AND NOT EXISTS (
+         SELECT registrationNumber
+         FROM dbo.Students
+         WHERE registrationNumber IS NOT NULL AND registrationNumber <> ''
+         GROUP BY registrationNumber
+         HAVING COUNT(*) > 1
+       )
+    BEGIN
+      CREATE UNIQUE INDEX UX_Students_RegistrationNumber
+      ON dbo.Students(registrationNumber)
+      WHERE registrationNumber IS NOT NULL AND registrationNumber <> ''
+    END
+  `)
+
   await query(
     `IF NOT EXISTS (SELECT 1 FROM dbo.Users WHERE email = ?)
      BEGIN
-       INSERT INTO dbo.Users (name, email, password, role)
-       VALUES (?, ?, ?, ?)
+       INSERT INTO dbo.Users (name, email, password, role, balance)
+       VALUES (?, ?, ?, ?, ?)
      END`,
-    ['admin@hostel.com', 'Admin', 'admin@hostel.com', 'password', 'ADMIN']
+    ['admin@hostel.com', 'Admin', 'admin@hostel.com', 'password', 'ADMIN', INITIAL_BALANCE_ADMIN]
   )
 
   await query(`
@@ -608,7 +949,119 @@ async function ensureFeatureTables() {
     UPDATE dbo.Users SET hostelId = 1 WHERE hostelId IS NULL AND role IN ('ADMIN', 'WARDEN', 'ACCOUNTANT', 'CARETAKER')
   `)
 
+  await query(`
+    IF NOT EXISTS (SELECT 1 FROM dbo.SchemaMigrations WHERE migrationKey = 'users_balance_role_based_2026_04')
+    BEGIN
+      UPDATE dbo.Users
+      SET balance = CASE WHEN role = 'ADMIN' THEN 100000 ELSE 10000 END;
+
+      INSERT INTO dbo.SchemaMigrations (migrationKey) VALUES ('users_balance_role_based_2026_04');
+    END
+  `)
+
+  await query(`
+    UPDATE dbo.Users
+    SET balance = CASE WHEN role = 'ADMIN' THEN 100000 ELSE 10000 END
+    WHERE balance IS NULL
+  `)
+
+  // Ensure every student has a linked STUDENT user for strict 1:1 User->Student mapping.
+  await query(`
+    INSERT INTO dbo.Users (name, email, password, role, hostelId)
+    SELECT s.name,
+           s.email,
+           ISNULL(NULLIF(s.password, ''), 'password'),
+           'STUDENT',
+           NULL
+    FROM dbo.Students s
+    LEFT JOIN dbo.Users u ON u.email = s.email
+    WHERE u.id IS NULL
+      AND s.email IS NOT NULL
+      AND s.email <> ''
+  `)
+
+  await query(`
+    UPDATE s
+    SET s.userId = u.id
+    FROM dbo.Students s
+    INNER JOIN dbo.Users u ON u.email = s.email AND u.role = 'STUDENT'
+    WHERE s.userId IS NULL
+  `)
+
+  await query(`
+    ;WITH DuplicateLinks AS (
+      SELECT id,
+             userId,
+             ROW_NUMBER() OVER (PARTITION BY userId ORDER BY id ASC) AS rn
+      FROM dbo.Students
+      WHERE userId IS NOT NULL
+    )
+    INSERT INTO dbo.Users (name, email, password, role, hostelId)
+    SELECT s.name,
+           CONCAT('student', s.id, '@hostel.local'),
+           ISNULL(NULLIF(s.password, ''), 'password'),
+           'STUDENT',
+           NULL
+    FROM DuplicateLinks d
+    INNER JOIN dbo.Students s ON s.id = d.id
+    WHERE d.rn > 1
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.Users ux WHERE ux.email = CONCAT('student', s.id, '@hostel.local')
+      )
+  `)
+
+  await query(`
+    ;WITH DuplicateLinks AS (
+      SELECT id,
+             userId,
+             ROW_NUMBER() OVER (PARTITION BY userId ORDER BY id ASC) AS rn
+      FROM dbo.Students
+      WHERE userId IS NOT NULL
+    )
+    UPDATE s
+    SET s.userId = u.id
+    FROM DuplicateLinks d
+    INNER JOIN dbo.Students s ON s.id = d.id
+    INNER JOIN dbo.Users u ON u.email = CONCAT('student', s.id, '@hostel.local') AND u.role = 'STUDENT'
+    WHERE d.rn > 1
+  `)
+
+  await query(`
+    INSERT INTO dbo.Users (name, email, password, role, hostelId)
+    SELECT s.name,
+           CONCAT('student', s.id, '@hostel.local'),
+           ISNULL(NULLIF(s.password, ''), 'password'),
+           'STUDENT',
+           NULL
+    FROM dbo.Students s
+    WHERE s.userId IS NULL
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.Users u WHERE u.email = CONCAT('student', s.id, '@hostel.local')
+      )
+  `)
+
+  await query(`
+    UPDATE s
+    SET s.userId = u.id
+    FROM dbo.Students s
+    INNER JOIN dbo.Users u ON u.email = CONCAT('student', s.id, '@hostel.local') AND u.role = 'STUDENT'
+    WHERE s.userId IS NULL
+  `)
+
+  // Ensure every staff user has exactly one linked profile for strict 1:1 User->Staff mapping.
+  await query(`
+    INSERT INTO dbo.StaffProfiles (userId)
+    SELECT u.id
+    FROM dbo.Users u
+    WHERE u.role IN ('WARDEN', 'CARETAKER')
+      AND NOT EXISTS (
+        SELECT 1 FROM dbo.StaffProfiles sp WHERE sp.userId = u.id
+      )
+  `)
+
   await ensureForeignKey('FK_Users_Hostels', 'Users', 'FOREIGN KEY (hostelId) REFERENCES dbo.Hostels(id)')
+  await ensureForeignKey('FK_Students_Users', 'Students', 'FOREIGN KEY (userId) REFERENCES dbo.Users(id)')
+  await ensureForeignKey('FK_StaffProfiles_Users', 'StaffProfiles', 'FOREIGN KEY (userId) REFERENCES dbo.Users(id)')
   await ensureForeignKey('FK_Rooms_Hostels', 'Rooms', 'FOREIGN KEY (hostelId) REFERENCES dbo.Hostels(id)')
   await ensureForeignKey('FK_Beds_Rooms', 'Beds', 'FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)')
   await ensureForeignKey('FK_StayRecords_Students', 'StayRecords', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
@@ -617,10 +1070,65 @@ async function ensureFeatureTables() {
   await ensureForeignKey('FK_RoomRequests_Students', 'RoomRequests', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
   await ensureForeignKey('FK_RoomRequests_Rooms', 'RoomRequests', 'FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)')
   await ensureForeignKey('FK_Payments_Students', 'Payments', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
+  await ensureForeignKey('FK_StaffPayments_StaffUser', 'StaffPayments', 'FOREIGN KEY (staffUserId) REFERENCES dbo.Users(id)')
+  await ensureForeignKey('FK_StaffPayments_InitiatedBy', 'StaffPayments', 'FOREIGN KEY (initiatedByUserId) REFERENCES dbo.Users(id)')
+  await ensureForeignKey('FK_StaffPrompts_StaffUser', 'StaffSalaryPrompts', 'FOREIGN KEY (staffUserId) REFERENCES dbo.Users(id)')
+  await ensureForeignKey('FK_StaffPrompts_ResolvedBy', 'StaffSalaryPrompts', 'FOREIGN KEY (resolvedByUserId) REFERENCES dbo.Users(id)')
   await ensureForeignKey('FK_Maintenance_Students', 'Maintenance', 'FOREIGN KEY (studentId) REFERENCES dbo.Students(id)')
   await ensureForeignKey('FK_Maintenance_Staff', 'Maintenance', 'FOREIGN KEY (staffId) REFERENCES dbo.Users(id)')
   await ensureForeignKey('FK_Maintenance_Rooms', 'Maintenance', 'FOREIGN KEY (roomId) REFERENCES dbo.Rooms(id)')
 
+  await query(`
+    IF OBJECT_ID('dbo.Students', 'U') IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM sys.indexes
+         WHERE name = 'UX_Students_UserId'
+           AND object_id = OBJECT_ID('dbo.Students')
+       )
+       AND NOT EXISTS (
+         SELECT userId
+         FROM dbo.Students
+         WHERE userId IS NOT NULL
+         GROUP BY userId
+         HAVING COUNT(*) > 1
+       )
+    BEGIN
+      CREATE UNIQUE INDEX UX_Students_UserId
+      ON dbo.Students(userId)
+      WHERE userId IS NOT NULL
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.StaffProfiles', 'U') IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM sys.indexes
+         WHERE name = 'UX_StaffProfiles_UserId'
+           AND object_id = OBJECT_ID('dbo.StaffProfiles')
+       )
+    BEGIN
+      CREATE UNIQUE INDEX UX_StaffProfiles_UserId
+      ON dbo.StaffProfiles(userId)
+    END
+  `)
+
+  await query(`
+    IF OBJECT_ID('dbo.StaffPayments', 'U') IS NOT NULL
+       AND NOT EXISTS (
+         SELECT 1
+         FROM sys.indexes
+         WHERE name = 'IX_StaffPayments_StaffCycle'
+           AND object_id = OBJECT_ID('dbo.StaffPayments')
+       )
+    BEGIN
+      CREATE INDEX IX_StaffPayments_StaffCycle
+      ON dbo.StaffPayments(staffUserId, cycleYear, cycleMonth)
+    END
+  `)
+
+  await recalculateRoomRents()
   await seedBedsForAllRooms()
 }
 
@@ -635,18 +1143,33 @@ app.post('/api/auth/signup', async (req, res) => {
       return res.status(400).json({ message: 'User already exists' });
     }
 
-    // Insert user
-    await query('INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)', [name, email, password, role, role === 'STUDENT' ? null : 1]);
-
-    // Add to respective tables
     if (role === 'STUDENT') {
-      await query(
-        'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-        [name, email, extra.phone || '', extra.registrationNumber || '', extra.department || '', extra.yearOfStudy || 1, 'ACTIVE', password]
-      );
+      await query('BEGIN TRANSACTION');
+      try {
+        await query('INSERT INTO Users (name, email, password, role, hostelId, balance) VALUES (?, ?, ?, ?, ?, ?)', [name, email, password, role, null, getInitialBalanceByRole(role)]);
+        const insertedUsers = await query('SELECT TOP 1 id FROM Users WHERE email = ? AND role = ? ORDER BY id DESC', [email, 'STUDENT']);
+        const linkedUserId = insertedUsers?.[0]?.id || null;
+        if (!linkedUserId) {
+          throw new Error('Unable to create linked student user');
+        }
+        const registrationNumber = await getNextRegistrationNumber();
+        await query(
+          'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [name, email, extra.phone || '', registrationNumber, extra.department || '', extra.yearOfStudy || 1, 'ACTIVE', password, linkedUserId]
+        );
+        await query('COMMIT TRANSACTION');
+      } catch (createErr) {
+        await query('ROLLBACK TRANSACTION');
+        throw createErr;
+      }
+    } else {
+      // Insert non-student user directly
+      await query('INSERT INTO Users (name, email, password, role, hostelId, balance) VALUES (?, ?, ?, ?, ?, ?)', [name, email, password, role, 1, getInitialBalanceByRole(role)]);
     }
 
-    res.status(201).json({ token: `token-${Date.now()}`, user: { name, email, role } });
+    const createdUsers = await query('SELECT TOP 1 id, name, email, role, balance FROM Users WHERE email = ? ORDER BY id DESC', [email]);
+    const createdUser = createdUsers?.[0] || { name, email, role, balance: getInitialBalanceByRole(role) };
+    res.status(201).json({ token: `token-${Date.now()}`, user: { id: createdUser.id, name: createdUser.name, email: createdUser.email, role: createdUser.role, balance: Number(createdUser.balance || 0) } });
   } catch (err) {
     console.error('Signup error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -663,7 +1186,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
 
     const user = users[0];
-    return res.json({ token: `token-${user.id}-${Date.now()}`, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    return res.json({ token: `token-${user.id}-${Date.now()}`, user: { id: user.id, name: user.name, email: user.email, role: user.role, balance: Number(user.balance || 0) } });
   } catch (err) {
     console.error('Login error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -704,9 +1227,16 @@ app.post('/api/auth/change-password', async (req, res) => {
 
 app.get('/api/me', async (req, res) => {
   try {
-    const auth = req.headers.authorization || '';
-    const token = auth.replace('Bearer ', '');
-    res.json({ id: 1, name: 'Admin', email: 'admin@hostel.com', role: 'ADMIN' });
+    const email = req.query.email;
+    if (email) {
+      const rows = await query('SELECT TOP 1 id, name, email, role, balance FROM Users WHERE email = ?', [email]);
+      if (rows && rows.length > 0) {
+        const user = rows[0];
+        return res.json({ id: user.id, name: user.name, email: user.email, role: user.role, balance: Number(user.balance || 0) });
+      }
+    }
+
+    res.json({ id: 1, name: 'Admin', email: 'admin@hostel.com', role: 'ADMIN', balance: 0 });
   } catch (err) {
     console.error('Me error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -751,10 +1281,45 @@ app.post('/api/students', async (req, res) => {
   try {
     const payload = req.body;
     const yearOfStudy = toIntOrDefault(payload.yearOfStudy, 1);
-    await query(
-      'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
-      [payload.name, payload.email, payload.phone || '', payload.registrationNumber || '', payload.department || '', yearOfStudy, payload.status || 'ACTIVE', payload.password || 'password']
-    );
+
+    await query('BEGIN TRANSACTION');
+    try {
+      const existingStudent = await query('SELECT TOP 1 id FROM Students WHERE email = ? ORDER BY id DESC', [payload.email]);
+      if (existingStudent && existingStudent.length > 0) {
+        throw new Error('Student already exists with this email');
+      }
+
+      let linkedUserId = null;
+      const existingUser = await query('SELECT TOP 1 id, role FROM Users WHERE email = ? ORDER BY id DESC', [payload.email]);
+      if (existingUser && existingUser.length > 0) {
+        if (existingUser[0].role !== 'STUDENT') {
+          throw new Error('Email already belongs to a non-student account');
+        }
+        linkedUserId = existingUser[0].id;
+      } else {
+        await query(
+          'INSERT INTO Users (name, email, password, role, hostelId, balance) VALUES (?, ?, ?, ?, ?, ?)',
+          [payload.name, payload.email, payload.password || 'password', 'STUDENT', null, getInitialBalanceByRole('STUDENT')]
+        );
+        const insertedUsers = await query('SELECT TOP 1 id FROM Users WHERE email = ? AND role = ? ORDER BY id DESC', [payload.email, 'STUDENT']);
+        linkedUserId = insertedUsers?.[0]?.id || null;
+      }
+
+      if (!linkedUserId) {
+        throw new Error('Unable to create linked student user');
+      }
+
+      const registrationNumber = await getNextRegistrationNumber();
+      await query(
+        'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [payload.name, payload.email, payload.phone || '', registrationNumber, payload.department || '', yearOfStudy, payload.status || 'ACTIVE', payload.password || 'password', linkedUserId]
+      );
+      await query('COMMIT TRANSACTION');
+    } catch (createErr) {
+      await query('ROLLBACK TRANSACTION');
+      throw createErr;
+    }
+
     const insertedStudent = await query('SELECT TOP 1 * FROM Students WHERE email = ? ORDER BY id DESC', [payload.email]);
     res.status(201).json({ ...(insertedStudent && insertedStudent[0] ? insertedStudent[0] : payload), yearOfStudy });
   } catch (err) {
@@ -768,19 +1333,48 @@ app.put('/api/students/:id', async (req, res) => {
     const id = Number(req.params.id);
     const payload = req.body;
     const yearOfStudy = toIntOrDefault(payload.yearOfStudy, 1);
+
+    const existingRows = await query('SELECT TOP 1 id, userId, email FROM Students WHERE id = ?', [id]);
+    if (!existingRows || existingRows.length === 0) {
+      return res.status(404).json({ message: 'Student not found' });
+    }
+
+    let linkedUserId = existingRows[0].userId || null;
+    if (!linkedUserId) {
+      const fallbackUser = await query('SELECT TOP 1 id, role FROM Users WHERE email = ? ORDER BY id DESC', [existingRows[0].email]);
+      if (fallbackUser && fallbackUser.length > 0 && fallbackUser[0].role === 'STUDENT') {
+        linkedUserId = fallbackUser[0].id;
+      }
+    }
+
+    if (linkedUserId) {
+      const conflictingEmail = await query('SELECT TOP 1 id FROM Users WHERE email = ? AND id <> ?', [payload.email, linkedUserId]);
+      if (conflictingEmail && conflictingEmail.length > 0) {
+        return res.status(400).json({ message: 'Email already belongs to another user' });
+      }
+
+      await query('UPDATE Users SET name = ?, email = ?, password = ?, role = ? WHERE id = ?', [
+        payload.name,
+        payload.email,
+        payload.password || 'password',
+        'STUDENT',
+        linkedUserId,
+      ]);
+    }
+
     await query(
       `UPDATE Students
-       SET name = ?, email = ?, phone = ?, registrationNumber = ?, department = ?, yearOfStudy = ?, status = ?, password = ?
+       SET name = ?, email = ?, phone = ?, department = ?, yearOfStudy = ?, status = ?, password = ?, userId = ?
        WHERE id = ?`,
       [
         payload.name,
         payload.email,
         payload.phone || '',
-        payload.registrationNumber || '',
         payload.department || '',
         yearOfStudy,
         payload.status || 'ACTIVE',
         payload.password || 'password',
+        linkedUserId,
         id,
       ]
     );
@@ -794,6 +1388,9 @@ app.put('/api/students/:id', async (req, res) => {
 app.delete('/api/students/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
+    const studentRows = await query('SELECT TOP 1 userId FROM Students WHERE id = ?', [id]);
+    const linkedUserId = studentRows?.[0]?.userId || null;
+
     await query('DELETE FROM StayRecords WHERE studentId = ?', [id]);
     await query('DELETE FROM Allocations WHERE studentId = ?', [id]);
     await query('DELETE FROM RoomRequests WHERE studentId = ?', [id]);
@@ -801,6 +1398,11 @@ app.delete('/api/students/:id', async (req, res) => {
     await query('DELETE FROM Payments WHERE studentId = ?', [id]);
     await query('DELETE FROM Invoices WHERE studentId = ?', [id]);
     await query('DELETE FROM Students WHERE id = ?', [id]);
+
+    if (linkedUserId) {
+      await query("DELETE FROM Users WHERE id = ? AND role = 'STUDENT'", [linkedUserId]);
+    }
+
     res.status(204).send();
   } catch (err) {
     console.error('Delete student error:', err);
@@ -814,19 +1416,29 @@ app.get('/api/rooms', async (req, res) => {
     // Get rooms with their allocations. Use a single allocations fetch to avoid concurrent queries on one connection.
     const rooms = await query('SELECT * FROM Rooms');
     const allocationRows = await query(`
-      SELECT a.id, a.studentId, a.roomId, a.checkInDate, a.status as allocationStatus,
+      SELECT a.id, a.studentId, a.roomId, a.bedId, a.checkInDate, a.status as allocationStatus,
              s.name as studentName, s.registrationNumber
+             ,b.bedNumber
       FROM Allocations a
       JOIN Students s ON a.studentId = s.id
+      LEFT JOIN Beds b ON a.bedId = b.id
       WHERE a.status = 'ACTIVE'
     `);
+    const reservedSeatRows = await query(`
+      SELECT roomId, COUNT(*) AS reservedSeats
+      FROM RoomRequests
+      WHERE status IN ('PENDING', 'APPROVED_WAITING_SHIFT')
+      GROUP BY roomId
+    `);
+    const reservedMap = new Map((reservedSeatRows || []).map((row) => [Number(row.roomId), Number(row.reservedSeats || 0)]));
 
     const roomsWithAllocations = [];
     for (const room of rooms) {
       const allocations = allocationRows.filter((a) => a.roomId === room.id);
       const currentOccupancy = allocations.length;
-      const computedStatus = currentOccupancy >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
-      const seatsLeft = Math.max(0, Number(room.capacity || 0) - currentOccupancy);
+      const reservedSeats = Number(reservedMap.get(Number(room.id)) || 0);
+      const computedStatus = (currentOccupancy + reservedSeats) >= room.capacity ? 'OCCUPIED' : 'AVAILABLE';
+      const seatsLeft = Math.max(0, Number(room.capacity || 0) - currentOccupancy - reservedSeats);
 
       if (room.status !== computedStatus) {
         await query('UPDATE Rooms SET status = ? WHERE id = ?', [computedStatus, room.id]);
@@ -836,12 +1448,15 @@ app.get('/api/rooms', async (req, res) => {
         ...room,
         status: computedStatus,
         occupiedSeats: currentOccupancy,
+        reservedSeats,
         seatsLeft,
         allocatedStudents: allocations.map((a) => ({
           id: a.studentId,
           name: a.studentName,
           registrationNumber: a.registrationNumber,
           allocationId: a.id,
+          bedId: a.bedId,
+          bedNumber: a.bedNumber,
           checkInDate: a.checkInDate,
         })),
       });
@@ -854,26 +1469,89 @@ app.get('/api/rooms', async (req, res) => {
   }
 });
 
+app.get('/api/rooms/check-availability', async (req, res) => {
+  try {
+    const roomNumber = String(req.query.roomNumber || '').trim();
+    const block = String(req.query.block || '').trim();
+    const excludeId = toNullableInt(req.query.excludeId);
+
+    if (!roomNumber || !block) {
+      return res.status(400).json({ message: 'roomNumber and block are required' });
+    }
+
+    const params = [roomNumber, block];
+    let sqlText = `
+      SELECT TOP 1 id, roomNumber, block
+      FROM Rooms
+      WHERE LTRIM(RTRIM(roomNumber)) = ?
+        AND LTRIM(RTRIM(block)) = ?
+    `;
+
+    if (excludeId) {
+      sqlText += ' AND id <> ?';
+      params.push(excludeId);
+    }
+
+    const existing = await query(sqlText, params);
+    const available = !existing || existing.length === 0;
+
+    return res.json({
+      available,
+      roomNumber,
+      block,
+      existingId: available ? null : Number(existing[0].id),
+      message: available
+        ? 'Room number is available for this block'
+        : 'Room number already exists in this block',
+    });
+  } catch (err) {
+    console.error('Check room availability error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 app.post('/api/rooms', async (req, res) => {
   try {
     const payload = req.body;
+    const roomNumber = String(payload.roomNumber || '').trim();
+    const block = String(payload.block || '').trim();
+    if (!roomNumber || !block) {
+      return res.status(400).json({ message: 'Room number and block are required' });
+    }
+
+    const existingRoom = await query(
+      'SELECT TOP 1 id FROM Rooms WHERE LTRIM(RTRIM(roomNumber)) = ? AND LTRIM(RTRIM(block)) = ?',
+      [roomNumber, block]
+    );
+    if (existingRoom && existingRoom.length > 0) {
+      return res.status(409).json({ message: 'Room number already exists in this block' });
+    }
+
     const floor = toNullableInt(payload.floor);
     const hostelId = toIntOrDefault(payload.hostelId, 1);
+    const roomType = normalizeRoomType(payload.type);
     const hasAC = toBit(payload.hasAC, 0);
     const hasAttachedBathroom = toBit(payload.hasAttachedBathroom, 0);
     const hasWifi = toBit(payload.hasWifi, 0);
     const hasBalcony = toBit(payload.hasBalcony, 0);
+    const computedRent = calculateRoomRentFromAttributes({
+      type: roomType,
+      hasAC,
+      hasAttachedBathroom,
+      hasWifi,
+      hasBalcony,
+    });
     await query(
       'INSERT INTO Rooms (roomNumber, block, floor, capacity, type, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, rentalCost, status, hostelId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [payload.roomNumber, payload.block, floor, payload.capacity, payload.type, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, payload.rentalCost, payload.status || 'AVAILABLE', hostelId]
+      [roomNumber, block, floor, payload.capacity, roomType, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, computedRent, payload.status || 'AVAILABLE', hostelId]
     );
-    const insertedRoom = await query('SELECT TOP 1 * FROM Rooms WHERE roomNumber = ? AND block = ? AND floor = ? ORDER BY id DESC', [payload.roomNumber, payload.block, floor]);
+    const insertedRoom = await query('SELECT TOP 1 * FROM Rooms WHERE roomNumber = ? AND block = ? AND floor = ? ORDER BY id DESC', [roomNumber, block, floor]);
     if (insertedRoom && insertedRoom.length > 0) {
       await ensureBedsForRoom(insertedRoom[0].id, toIntOrDefault(payload.capacity, 1));
       res.status(201).json({ ...insertedRoom[0] });
       return;
     }
-    res.status(201).json({ ...payload, floor, hostelId, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
+    res.status(201).json({ ...payload, roomNumber, block, floor, hostelId, type: roomType, rentalCost: computedRent, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
   } catch (err) {
     console.error('Create room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -895,9 +1573,9 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
       return res.status(400).json({ message: 'Student identity is required to apply for a room' });
     }
 
-    const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [studentId, 'ACTIVE']);
-    if (existingAllocation && existingAllocation.length > 0) {
-      return res.status(400).json({ message: 'Student already has an active room allocation' });
+    const activeAllocation = await getActiveAllocationForStudent(studentId);
+    if (activeAllocation && Number(activeAllocation.roomId) === roomId) {
+      return res.status(400).json({ message: 'You are already allocated to this room' });
     }
 
     const room = await query('SELECT * FROM Rooms WHERE id = ?', [roomId]);
@@ -910,18 +1588,26 @@ app.post('/api/rooms/:id/apply', async (req, res) => {
       [roomId, 'ACTIVE']
     );
     const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
-    if (activeCount >= Number(room[0].capacity || 0)) {
-      await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
+    const reservedCount = await getReservedSeatCountForRoom(roomId);
+    if ((activeCount + reservedCount) >= Number(room[0].capacity || 0)) {
       return res.status(400).json({ message: 'Room is at full capacity' });
     }
 
     const existingRequest = await query(
-      'SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN (?, ?)',
-      [studentId, roomId, 'PENDING', 'APPROVED']
+      "SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN ('PENDING', 'APPROVED', 'APPROVED_WAITING_SHIFT')",
+      [studentId, roomId]
     );
 
     if (existingRequest && existingRequest.length > 0) {
       return res.status(400).json({ message: 'You have already requested this room' });
+    }
+
+    const activeReservation = await query(
+      "SELECT TOP 1 id FROM RoomRequests WHERE studentId = ? AND status IN ('PENDING', 'APPROVED_WAITING_SHIFT') ORDER BY id DESC",
+      [studentId]
+    );
+    if (activeReservation && activeReservation.length > 0) {
+      return res.status(400).json({ message: 'You already have an active room reservation request' });
     }
 
     await query(
@@ -947,7 +1633,8 @@ app.get('/api/rooms/:id', async (req, res) => {
     const room = result[0];
     const activeAllocations = await query('SELECT COUNT(*) AS count FROM Allocations WHERE roomId = ? AND status = ?', [id, 'ACTIVE']);
     const occupiedSeats = Number(activeAllocations?.[0]?.count || 0);
-    const seatsLeft = Math.max(0, Number(room.capacity || 0) - occupiedSeats);
+    const reservedSeats = await getReservedSeatCountForRoom(id);
+    const seatsLeft = Math.max(0, Number(room.capacity || 0) - occupiedSeats - reservedSeats);
     const computedStatus = seatsLeft === 0 ? 'OCCUPIED' : 'AVAILABLE';
 
     if (room.status !== computedStatus) {
@@ -958,6 +1645,7 @@ app.get('/api/rooms/:id', async (req, res) => {
       ...room,
       status: computedStatus,
       occupiedSeats,
+      reservedSeats,
       seatsLeft,
     });
   } catch (err) {
@@ -970,28 +1658,50 @@ app.put('/api/rooms/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
     const payload = req.body;
+    const roomNumber = String(payload.roomNumber || '').trim();
+    const block = String(payload.block || '').trim();
+    if (!roomNumber || !block) {
+      return res.status(400).json({ message: 'Room number and block are required' });
+    }
+
+    const existingRoom = await query(
+      'SELECT TOP 1 id FROM Rooms WHERE LTRIM(RTRIM(roomNumber)) = ? AND LTRIM(RTRIM(block)) = ? AND id <> ?',
+      [roomNumber, block, id]
+    );
+    if (existingRoom && existingRoom.length > 0) {
+      return res.status(409).json({ message: 'Room number already exists in this block' });
+    }
+
     const floor = toNullableInt(payload.floor);
     const hostelId = toIntOrDefault(payload.hostelId, 1);
+    const roomType = normalizeRoomType(payload.type);
     const hasAC = toBit(payload.hasAC, 0);
     const hasAttachedBathroom = toBit(payload.hasAttachedBathroom, 0);
     const hasWifi = toBit(payload.hasWifi, 0);
     const hasBalcony = toBit(payload.hasBalcony, 0);
+    const computedRent = calculateRoomRentFromAttributes({
+      type: roomType,
+      hasAC,
+      hasAttachedBathroom,
+      hasWifi,
+      hasBalcony,
+    });
 
     await query(
       `UPDATE Rooms 
        SET roomNumber = ?, block = ?, floor = ?, capacity = ?, type = ?, hasAC = ?, hasAttachedBathroom = ?, hasWifi = ?, hasBalcony = ?, rentalCost = ?, status = ?, hostelId = ?
        WHERE id = ?`,
       [
-        payload.roomNumber,
-        payload.block,
+        roomNumber,
+        block,
         floor,
         payload.capacity,
-        payload.type,
+        roomType,
         hasAC,
         hasAttachedBathroom,
         hasWifi,
         hasBalcony,
-        payload.rentalCost,
+        computedRent,
         payload.status || 'AVAILABLE',
         hostelId,
         id
@@ -1000,7 +1710,7 @@ app.put('/api/rooms/:id', async (req, res) => {
 
     await ensureBedsForRoom(id, toIntOrDefault(payload.capacity, 1));
 
-    res.json({ ...payload, id, floor, hostelId, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
+    res.json({ ...payload, id, roomNumber, block, floor, hostelId, type: roomType, rentalCost: computedRent, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
   } catch (err) {
     console.error('Update room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1036,12 +1746,14 @@ app.get('/api/complaints', async (req, res) => {
     const result = await query(`
       SELECT m.id, m.description, m.room, m.roomId, m.studentId, m.staffId, m.priority, m.status, m.reportedDate, m.assignedTo,
              m.assignedById, m.assignedDate, m.resolvedById, m.resolvedDate,
-             m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
+              m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
+              m.caretakerApprovalStatus, m.caretakerApprovedById, m.caretakerApprovedDate,
              s.name AS studentName,
               s.email AS studentEmail,
              st.name AS staffName,
              ab.name AS assignedByName,
              rb.name AS resolvedByName,
+              cap.name AS caretakerApprovedByName,
              sap.name AS studentApprovedByName,
              r.roomNumber
       FROM Maintenance m
@@ -1049,6 +1761,7 @@ app.get('/api/complaints', async (req, res) => {
       LEFT JOIN Users st ON m.staffId = st.id OR m.assignedTo = st.id
       LEFT JOIN Users ab ON m.assignedById = ab.id
       LEFT JOIN Users rb ON m.resolvedById = rb.id
+            LEFT JOIN Users cap ON m.caretakerApprovedById = cap.id
       LEFT JOIN Users sap ON m.studentApprovedById = sap.id
       LEFT JOIN Rooms r ON m.roomId = r.id
       ORDER BY m.reportedDate DESC
@@ -1115,28 +1828,59 @@ app.put('/api/complaints/:id', async (req, res) => {
     const studentId = toNullableInt(payload.studentId);
     const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
     const actorUserId = toNullableInt(payload.actorUserId);
+    const actorUser = await getUserRoleById(actorUserId);
     const linkedRoom = roomId ? await getRoomById(roomId) : null;
     const roomName = payload.room || linkedRoom?.roomNumber || '';
 
     if (payload.action === 'ASSIGN') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'WARDEN') {
+        return res.status(403).json({ message: 'Only the warden can assign complaints' });
+      }
+
+      if (staffId) {
+        const targetStaff = await getUserRoleById(staffId);
+        if (!targetStaff || String(targetStaff.role || '').toUpperCase() !== 'CARETAKER') {
+          return res.status(400).json({ message: 'Complaints can only be assigned to caretakers' });
+        }
+      }
+
       await query(
         `UPDATE Maintenance
          SET room = ?, roomId = ?, staffId = ?, assignedTo = ?, assignedById = ?, assignedDate = GETDATE(),
-             status = ?, studentApprovalStatus = ?
+             status = ?, studentApprovalStatus = ?, caretakerApprovalStatus = ?,
+             caretakerApprovedById = NULL, caretakerApprovedDate = NULL,
+             studentApprovedById = NULL, studentApprovedDate = NULL,
+             resolvedById = NULL, resolvedDate = NULL,
+             closedById = NULL, closedDate = NULL
          WHERE id = ?`,
-        [roomName, roomId, staffId, staffId, actorUserId, 'ASSIGNED', 'PENDING', id]
+        [roomName, roomId, staffId, staffId, actorUserId, 'ASSIGNED', 'PENDING', 'PENDING', id]
       );
 
       const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
       return res.json(updated && updated[0] ? updated[0] : { id, action: 'ASSIGN' });
     }
 
-    if (payload.action === 'RESOLVE') {
+    if (payload.action === 'RESOLVE' || payload.action === 'CARETAKER_APPROVE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'CARETAKER') {
+        return res.status(403).json({ message: 'Only the assigned caretaker can mark a complaint resolved' });
+      }
+
+      const ownership = await query('SELECT TOP 1 staffId, assignedTo, status FROM Maintenance WHERE id = ?', [id]);
+      const assignedStaffId = toNullableInt(ownership?.[0]?.staffId ?? ownership?.[0]?.assignedTo);
+      const currentStatus = String(ownership?.[0]?.status || '').toUpperCase();
+      if (!assignedStaffId || assignedStaffId !== actorUserId) {
+        return res.status(403).json({ message: 'Only the assigned caretaker can approve resolution' });
+      }
+      if (currentStatus !== 'ASSIGNED') {
+        return res.status(400).json({ message: 'Complaint is not in an assignable state for caretaker approval' });
+      }
+
       await query(
         `UPDATE Maintenance
-         SET status = ?, resolvedById = ?, resolvedDate = GETDATE()
+         SET status = ?, resolvedById = ?, resolvedDate = GETDATE(),
+             caretakerApprovalStatus = ?, caretakerApprovedById = ?, caretakerApprovedDate = GETDATE()
          WHERE id = ?`,
-        ['RESOLVED_PENDING_APPROVAL', actorUserId || staffId, id]
+        ['RESOLVED_PENDING_APPROVAL', actorUserId || staffId, 'APPROVED', actorUserId, id]
       );
 
       const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
@@ -1144,25 +1888,56 @@ app.put('/api/complaints/:id', async (req, res) => {
     }
 
     if (payload.action === 'STUDENT_APPROVE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'STUDENT') {
+        return res.status(403).json({ message: 'Only the student can approve or reject a complaint resolution' });
+      }
+
       const approvalDecision = String(payload.decision || 'APPROVED').toUpperCase();
       if (approvalDecision === 'REJECTED') {
         await query(
           `UPDATE Maintenance
-           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(), status = ?
+           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(),
+               caretakerApprovalStatus = ?, caretakerApprovedById = NULL, caretakerApprovedDate = NULL,
+               resolvedById = NULL, resolvedDate = NULL,
+               status = ?
            WHERE id = ?`,
-          ['REJECTED', actorUserId, 'ASSIGNED', id]
+          ['REJECTED', actorUserId, 'PENDING', 'ASSIGNED', id]
         );
       } else {
         await query(
           `UPDATE Maintenance
-           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(), status = ?
+           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(), status = ?, closedById = NULL, closedDate = NULL
            WHERE id = ?`,
-          ['APPROVED', actorUserId, 'CLOSED', id]
+          ['APPROVED', actorUserId, 'RESOLVED_PENDING_WARDEN_CLOSE', id]
         );
       }
 
       const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
       return res.json(updated && updated[0] ? updated[0] : { id, action: 'STUDENT_APPROVE', decision: approvalDecision });
+    }
+
+    if (payload.action === 'WARDEN_CLOSE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'WARDEN') {
+        return res.status(403).json({ message: 'Only the warden can close a complaint' });
+      }
+
+      const currentComplaint = await query('SELECT TOP 1 status, studentApprovalStatus, caretakerApprovalStatus FROM Maintenance WHERE id = ?', [id]);
+      const currentStatus = String(currentComplaint?.[0]?.status || '').toUpperCase();
+      const studentStatus = String(currentComplaint?.[0]?.studentApprovalStatus || '').toUpperCase();
+      const caretakerStatus = String(currentComplaint?.[0]?.caretakerApprovalStatus || '').toUpperCase();
+      if (currentStatus !== 'RESOLVED_PENDING_WARDEN_CLOSE' || studentStatus !== 'APPROVED' || caretakerStatus !== 'APPROVED') {
+        return res.status(400).json({ message: 'Complaint is not ready for warden close' });
+      }
+
+      await query(
+        `UPDATE Maintenance
+         SET status = ?, closedById = ?, closedDate = GETDATE()
+         WHERE id = ?`,
+        ['CLOSED', actorUserId, id]
+      );
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'WARDEN_CLOSE' });
     }
 
     await query(
@@ -1194,12 +1969,14 @@ app.get('/api/maintenance', async (req, res) => {
     const result = await query(`
       SELECT m.id, m.description, m.room, m.roomId, m.studentId, m.staffId, m.priority, m.status, m.reportedDate, m.assignedTo,
              m.assignedById, m.assignedDate, m.resolvedById, m.resolvedDate,
-             m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
+              m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
+              m.caretakerApprovalStatus, m.caretakerApprovedById, m.caretakerApprovedDate,
              s.name AS studentName,
               s.email AS studentEmail,
              st.name AS staffName,
              ab.name AS assignedByName,
              rb.name AS resolvedByName,
+              cap.name AS caretakerApprovedByName,
              sap.name AS studentApprovedByName,
              r.roomNumber
       FROM Maintenance m
@@ -1207,6 +1984,7 @@ app.get('/api/maintenance', async (req, res) => {
       LEFT JOIN Users st ON m.staffId = st.id OR m.assignedTo = st.id
       LEFT JOIN Users ab ON m.assignedById = ab.id
       LEFT JOIN Users rb ON m.resolvedById = rb.id
+            LEFT JOIN Users cap ON m.caretakerApprovedById = cap.id
       LEFT JOIN Users sap ON m.studentApprovedById = sap.id
       LEFT JOIN Rooms r ON m.roomId = r.id
       ORDER BY m.reportedDate DESC
@@ -1272,8 +2050,119 @@ app.put('/api/maintenance/:id', async (req, res) => {
     const roomId = toNullableInt(payload.roomId);
     const studentId = toNullableInt(payload.studentId);
     const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
+    const actorUserId = toNullableInt(payload.actorUserId);
+    const actorUser = await getUserRoleById(actorUserId);
     const linkedRoom = roomId ? await getRoomById(roomId) : null;
     const roomName = payload.room || linkedRoom?.roomNumber || '';
+
+    if (payload.action === 'ASSIGN') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'WARDEN') {
+        return res.status(403).json({ message: 'Only the warden can assign complaints' });
+      }
+
+      if (staffId) {
+        const targetStaff = await getUserRoleById(staffId);
+        if (!targetStaff || String(targetStaff.role || '').toUpperCase() !== 'CARETAKER') {
+          return res.status(400).json({ message: 'Complaints can only be assigned to caretakers' });
+        }
+      }
+
+      await query(
+        `UPDATE Maintenance
+         SET room = ?, roomId = ?, staffId = ?, assignedTo = ?, assignedById = ?, assignedDate = GETDATE(),
+             status = ?, studentApprovalStatus = ?, caretakerApprovalStatus = ?,
+             caretakerApprovedById = NULL, caretakerApprovedDate = NULL,
+             studentApprovedById = NULL, studentApprovedDate = NULL,
+             resolvedById = NULL, resolvedDate = NULL,
+             closedById = NULL, closedDate = NULL
+         WHERE id = ?`,
+        [roomName, roomId, staffId, staffId, actorUserId, 'ASSIGNED', 'PENDING', 'PENDING', id]
+      );
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'ASSIGN' });
+    }
+
+    if (payload.action === 'RESOLVE' || payload.action === 'CARETAKER_APPROVE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'CARETAKER') {
+        return res.status(403).json({ message: 'Only the assigned caretaker can mark a complaint resolved' });
+      }
+
+      const ownership = await query('SELECT TOP 1 staffId, assignedTo, status FROM Maintenance WHERE id = ?', [id]);
+      const assignedStaffId = toNullableInt(ownership?.[0]?.staffId ?? ownership?.[0]?.assignedTo);
+      const currentStatus = String(ownership?.[0]?.status || '').toUpperCase();
+      if (!assignedStaffId || assignedStaffId !== actorUserId) {
+        return res.status(403).json({ message: 'Only the assigned caretaker can approve resolution' });
+      }
+      if (currentStatus !== 'ASSIGNED') {
+        return res.status(400).json({ message: 'Complaint is not in an assignable state for caretaker approval' });
+      }
+
+      await query(
+        `UPDATE Maintenance
+         SET status = ?, resolvedById = ?, resolvedDate = GETDATE(),
+             caretakerApprovalStatus = ?, caretakerApprovedById = ?, caretakerApprovedDate = GETDATE()
+         WHERE id = ?`,
+        ['RESOLVED_PENDING_APPROVAL', actorUserId || staffId, 'APPROVED', actorUserId, id]
+      );
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'RESOLVE' });
+    }
+
+    if (payload.action === 'STUDENT_APPROVE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'STUDENT') {
+        return res.status(403).json({ message: 'Only the student can approve or reject a complaint resolution' });
+      }
+
+      const approvalDecision = String(payload.decision || 'APPROVED').toUpperCase();
+      if (approvalDecision === 'REJECTED') {
+        await query(
+          `UPDATE Maintenance
+           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(),
+               caretakerApprovalStatus = ?, caretakerApprovedById = NULL, caretakerApprovedDate = NULL,
+               resolvedById = NULL, resolvedDate = NULL,
+               status = ?
+           WHERE id = ?`,
+          ['REJECTED', actorUserId, 'PENDING', 'ASSIGNED', id]
+        );
+      } else {
+        await query(
+          `UPDATE Maintenance
+           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(), status = ?, closedById = NULL, closedDate = NULL
+           WHERE id = ?`,
+          ['APPROVED', actorUserId, 'RESOLVED_PENDING_WARDEN_CLOSE', id]
+        );
+      }
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'STUDENT_APPROVE', decision: approvalDecision });
+    }
+
+    if (payload.action === 'WARDEN_CLOSE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'WARDEN') {
+        return res.status(403).json({ message: 'Only the warden can close a complaint' });
+      }
+
+      const currentComplaint = await query('SELECT TOP 1 status, studentApprovalStatus, caretakerApprovalStatus FROM Maintenance WHERE id = ?', [id]);
+      const currentStatus = String(currentComplaint?.[0]?.status || '').toUpperCase();
+      const studentStatus = String(currentComplaint?.[0]?.studentApprovalStatus || '').toUpperCase();
+      const caretakerStatus = String(currentComplaint?.[0]?.caretakerApprovalStatus || '').toUpperCase();
+      if (currentStatus !== 'RESOLVED_PENDING_WARDEN_CLOSE' || studentStatus !== 'APPROVED' || caretakerStatus !== 'APPROVED') {
+        return res.status(400).json({ message: 'Complaint is not ready for warden close' });
+      }
+
+      await query(
+        `UPDATE Maintenance
+         SET status = ?, closedById = ?, closedDate = GETDATE()
+         WHERE id = ?`,
+        ['CLOSED', actorUserId, id]
+      );
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'WARDEN_CLOSE' });
+    }
+
     await query(
       'UPDATE Maintenance SET description = ?, room = ?, roomId = ?, studentId = ?, staffId = ?, priority = ?, status = ?, assignedTo = ? WHERE id = ?',
       [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', payload.status || 'PENDING', staffId || null, id]
@@ -1299,8 +2188,17 @@ app.delete('/api/maintenance/:id', async (req, res) => {
 // Payments
 app.get('/api/payments', async (req, res) => {
   try {
-    const result = await query('SELECT * FROM Payments');
-    res.json(result);
+    const result = await query(`
+      SELECT p.*, s.name AS studentName, s.registrationNumber
+      FROM Payments p
+      LEFT JOIN Students s ON p.studentId = s.id
+      ORDER BY p.paymentDate DESC
+    `);
+    res.json((result || []).map((row) => ({
+      ...row,
+      paymentDate: row.paymentDate ? new Date(row.paymentDate).toISOString() : null,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    })));
   } catch (err) {
     console.error('Get payments error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1315,7 +2213,7 @@ app.post('/api/payments', async (req, res) => {
       'INSERT INTO Payments (invoiceId, studentId, amount, paymentDate, method, reference) VALUES (?, ?, ?, ?, ?, ?)',
       [payload.invoiceId || null, payload.studentId, payload.amount, paymentDate, payload.method || 'CASH', payload.reference || '']
     );
-    res.status(201).json(payload);
+    res.status(201).json({ ...payload, paymentDate, created_at: paymentDate });
   } catch (err) {
     console.error('Create payment error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1421,14 +2319,30 @@ app.get('/api/fees/rent-status', async (req, res) => {
       return res.status(404).json({ message: 'Student not found' });
     }
 
+    let currentBalance = 0;
+    if (student.userId) {
+      const userBalanceRows = await query('SELECT TOP 1 balance FROM Users WHERE id = ?', [student.userId]);
+      currentBalance = Number(userBalanceRows?.[0]?.balance || 0);
+    } else {
+      const userBalanceRows = await query('SELECT TOP 1 balance FROM Users WHERE email = ?', [student.email]);
+      currentBalance = Number(userBalanceRows?.[0]?.balance || 0);
+    }
+
     const allocation = await getActiveAllocationForStudent(student.id);
     if (!allocation) {
       return res.json({
         studentId: student.id,
+        studentName: student.name,
         hasActiveAllocation: false,
+        currentBalance,
         notifyRent: false,
         canPayNow: false,
+        canRequestRoomChange: true,
+        daysUntilRoomChangeAllowed: 0,
+        roomChangeEligibleAt: null,
         daysUsed: 0,
+        daysUntilPaymentDue: 0,
+        nextPaymentDueAt: null,
         pendingCycles: 0,
       });
     }
@@ -1445,6 +2359,15 @@ app.get('/api/fees/rent-status', async (req, res) => {
     const pendingCycles = Math.max(0, dueCycles - paidCycles);
     const nextCycleToPay = paidCycles + 1;
     const nextPayDayThreshold = nextCycleToPay * 31;
+    
+    // Calculate nextPaymentDueAt using SQL for reliable date arithmetic
+    const dueDateRows = await query(
+      'SELECT DATEADD(day, ?, a.checkInDate) AS nextPaymentDueAt FROM Allocations a WHERE a.id = ?',
+      [nextPayDayThreshold, allocation.id]
+    );
+    const nextPaymentDueAt = dueDateRows?.[0]?.nextPaymentDueAt || new Date();
+
+    const roomChange = await getRoomChangeEligibility(student.id, allocation);
 
     // Calculate consecutive payment months based on rent cycle references
     const rentCycleRows = await query(
@@ -1479,11 +2402,18 @@ app.get('/api/fees/rent-status', async (req, res) => {
       hasActiveAllocation: true,
       roomId: allocation.roomId,
       roomNumber: allocation.roomNumber,
+      bedId: allocation.bedId || null,
+      bedNumber: allocation.bedNumber || null,
       monthlyRent: Number(allocation.rentalCost || 0),
+      currentBalance,
       daysUsed,
       notifyRent: daysUsed >= 25,
       canPayNow: daysUsed >= nextPayDayThreshold,
       daysUntilPaymentDue: Math.max(0, nextPayDayThreshold - daysUsed),
+      nextPaymentDueAt,
+      canRequestRoomChange: roomChange.canRequestRoomChange,
+      daysUntilRoomChangeAllowed: roomChange.daysUntilRoomChangeAllowed,
+      roomChangeEligibleAt: roomChange.roomChangeEligibleAt,
       pendingCycles,
       paidCycles,
       monthsPaid: paidCycles,
@@ -1547,7 +2477,7 @@ app.post('/api/fees/rent-pay', async (req, res) => {
 
     const cycleLabel = `RENT_${student.id}_CYCLE_${nextCycleToPay}`;
     const invoiceDescription = `RENT_CYCLE_${nextCycleToPay}`;
-    const method = payload.method || 'CARD';
+    const method = String(payload.method || 'BKASH').toUpperCase() === 'NAGAD' ? 'NAGAD' : 'BKASH';
     const externalReference = payload.reference || null;
 
     const txResult = await query(
@@ -1573,6 +2503,25 @@ app.post('/api/fees/rent-pay', async (req, res) => {
            VALUES (?, ?, GETDATE(), 'PENDING', ?);
            SET @invoiceId = SCOPE_IDENTITY();
          END
+
+         DECLARE @payerUserId INT;
+         DECLARE @adminUserId INT;
+
+         SELECT TOP 1 @payerUserId = userId FROM Students WHERE id = ?;
+         SELECT TOP 1 @adminUserId = id FROM Users WHERE role = 'ADMIN' ORDER BY id ASC;
+
+         IF @payerUserId IS NULL OR @adminUserId IS NULL
+         BEGIN
+           RAISERROR('Payer or admin account not found for transfer.', 16, 1);
+         END
+
+         IF (SELECT balance FROM Users WHERE id = @payerUserId) < ?
+         BEGIN
+           RAISERROR('Insufficient balance to complete rent payment.', 16, 1);
+         END
+
+         UPDATE Users SET balance = balance - ? WHERE id = @payerUserId;
+         UPDATE Users SET balance = balance + ? WHERE id = @adminUserId;
 
          INSERT INTO Payments (invoiceId, studentId, amount, paymentDate, method, reference)
          VALUES (@invoiceId, ?, ?, GETDATE(), ?, ?);
@@ -1602,6 +2551,10 @@ app.post('/api/fees/rent-pay', async (req, res) => {
         invoiceDescription,
         student.id,
         amount,
+        amount,
+        amount,
+        student.id,
+        amount,
         method,
         cycleLabel,
       ]
@@ -1628,7 +2581,12 @@ app.get('/api/fees/payments/:id', async (req, res) => {
     if (!result || result.length === 0) {
       return res.status(404).json({ message: 'Not found' });
     }
-    res.json(result[0]);
+    const row = result[0];
+    res.json({
+      ...row,
+      paymentDate: row.paymentDate ? new Date(row.paymentDate).toISOString() : null,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    });
   } catch (err) {
     console.error('Get fee payment detail error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1643,7 +2601,7 @@ app.post('/api/fees/payments', async (req, res) => {
       'INSERT INTO Payments (invoiceId, studentId, amount, paymentDate, method, reference) VALUES (?, ?, ?, ?, ?, ?)',
       [payload.invoiceId || null, payload.studentId, payload.amount, paymentDate, payload.method || 'CASH', payload.reference || '']
     );
-    res.status(201).json(payload);
+    res.status(201).json({ ...payload, paymentDate, created_at: paymentDate });
   } catch (err) {
     console.error('Create fee payment error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1668,8 +2626,33 @@ app.put('/api/fees/payments/:id', async (req, res) => {
 // Staff module routes expected by frontend
 app.get('/api/staff', async (req, res) => {
   try {
-    const result = await query("SELECT id, name, email, role, hostelId FROM Users WHERE role IN ('WARDEN', 'CARETAKER')");
-    res.json(result);
+    const result = await query(`
+      SELECT u.id, u.name, u.email, u.role, u.hostelId, u.balance,
+             sp.phone, sp.employmentStatus, sp.[shift] AS shiftName, sp.specialty, sp.joinedDate, sp.salary,
+             DATEDIFF(day, ISNULL(sp.joinedDate, GETDATE()), GETDATE()) AS workedDays,
+             CASE WHEN EXISTS (
+               SELECT 1 FROM StaffPayments pay
+               WHERE pay.staffUserId = u.id
+                 AND pay.cycleMonth = MONTH(GETDATE())
+                 AND pay.cycleYear = YEAR(GETDATE())
+                 AND pay.status = 'SUCCESS'
+             ) THEN 1 ELSE 0 END AS currentCyclePaid
+      FROM Users u
+      INNER JOIN StaffProfiles sp ON sp.userId = u.id
+      WHERE u.role IN ('WARDEN', 'CARETAKER')
+    `);
+    const rows = (result || []).map(normalizeStaffProfileRow).map((row) => {
+      const workedDays = Math.max(0, Number(row.workedDays || 0));
+      const isActive = String(row.employmentStatus || '').toUpperCase() === 'ACTIVE';
+      return {
+        ...row,
+        workedDays,
+        currentCyclePaid: Number(row.currentCyclePaid || 0) === 1,
+        isSalaryDue: isActive && workedDays >= 30 && Number(row.currentCyclePaid || 0) !== 1,
+        balance: Number(row.balance || 0),
+      };
+    });
+    res.json(rows);
   } catch (err) {
     console.error('Get staff error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1679,11 +2662,34 @@ app.get('/api/staff', async (req, res) => {
 app.get('/api/staff/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const result = await query('SELECT id, name, email, role, hostelId FROM Users WHERE id = ?', [id]);
+    const result = await query(`
+            SELECT u.id, u.name, u.email, u.role, u.hostelId, u.balance,
+              sp.phone, sp.employmentStatus, sp.[shift] AS shiftName, sp.specialty, sp.joinedDate, sp.salary,
+              DATEDIFF(day, ISNULL(sp.joinedDate, GETDATE()), GETDATE()) AS workedDays,
+              CASE WHEN EXISTS (
+           SELECT 1 FROM StaffPayments pay
+           WHERE pay.staffUserId = u.id
+             AND pay.cycleMonth = MONTH(GETDATE())
+             AND pay.cycleYear = YEAR(GETDATE())
+             AND pay.status = 'SUCCESS'
+              ) THEN 1 ELSE 0 END AS currentCyclePaid
+      FROM Users u
+      INNER JOIN StaffProfiles sp ON sp.userId = u.id
+      WHERE u.id = ?
+    `, [id]);
     if (!result || result.length === 0) {
       return res.status(404).json({ message: 'Not found' });
     }
-    res.json(result[0]);
+    const row = normalizeStaffProfileRow(result[0]);
+    const workedDays = Math.max(0, Number(row.workedDays || 0));
+    const isActive = String(row.employmentStatus || '').toUpperCase() === 'ACTIVE';
+    res.json({
+      ...row,
+      workedDays,
+      currentCyclePaid: Number(row.currentCyclePaid || 0) === 1,
+      isSalaryDue: isActive && workedDays >= 30 && Number(row.currentCyclePaid || 0) !== 1,
+      balance: Number(row.balance || 0),
+    });
   } catch (err) {
     console.error('Get staff member error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1695,6 +2701,14 @@ app.post('/api/staff', async (req, res) => {
     const payload = req.body;
     const role = payload.role === 'CARETAKER' ? 'CARETAKER' : 'WARDEN';
     const hostelId = toIntOrDefault(payload.hostelId, 1);
+    const employmentStatus = payload.employmentStatus === 'INACTIVE' || payload.employmentStatus === 'ON_LEAVE'
+      ? payload.employmentStatus
+      : 'ACTIVE';
+    const shift = payload.shift === 'NIGHT' || payload.shift === 'FLEX' ? payload.shift : 'DAY';
+    const specialty = payload.specialty || null;
+    const phone = payload.phone || null;
+    const joinedDate = payload.joinedDate || null;
+    const salary = resolveStaffSalary(role);
 
     if (!payload.name || !payload.email || !payload.password) {
       return res.status(400).json({ message: 'Name, email and password are required' });
@@ -1713,11 +2727,30 @@ app.post('/api/staff', async (req, res) => {
       return res.status(400).json({ message: 'Invalid hostel id' });
     }
 
-    await query(
-      'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
-      [payload.name, payload.email, payload.password || 'password', role, hostelId]
-    );
-    res.status(201).json({ name: payload.name, email: payload.email, role, hostelId });
+    await query('BEGIN TRANSACTION');
+    try {
+      await query(
+        'INSERT INTO Users (name, email, password, role, hostelId, balance) VALUES (?, ?, ?, ?, ?, ?)',
+        [payload.name, payload.email, payload.password || 'password', role, hostelId, getInitialBalanceByRole(role)]
+      );
+
+      const insertedUsers = await query('SELECT TOP 1 id FROM Users WHERE email = ? ORDER BY id DESC', [payload.email]);
+      const linkedUserId = insertedUsers?.[0]?.id || null;
+      if (!linkedUserId) {
+        throw new Error('Unable to create linked staff user');
+      }
+
+      await query(
+        'INSERT INTO StaffProfiles (userId, phone, employmentStatus, [shift], specialty, joinedDate, salary) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [linkedUserId, phone, employmentStatus, shift, specialty, joinedDate, salary]
+      );
+      await query('COMMIT TRANSACTION');
+    } catch (createErr) {
+      await query('ROLLBACK TRANSACTION');
+      throw createErr;
+    }
+
+    res.status(201).json({ name: payload.name, email: payload.email, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate, salary: resolveStaffSalary(role) });
   } catch (err) {
     console.error('Create staff error:', err);
     res.status(500).json({ message: err.message || 'Internal server error' });
@@ -1730,6 +2763,14 @@ app.put('/api/staff/:id', async (req, res) => {
     const payload = req.body;
     const role = payload.role === 'CARETAKER' ? 'CARETAKER' : 'WARDEN';
     const hostelId = toIntOrDefault(payload.hostelId, 1);
+    const employmentStatus = payload.employmentStatus === 'INACTIVE' || payload.employmentStatus === 'ON_LEAVE'
+      ? payload.employmentStatus
+      : 'ACTIVE';
+    const shift = payload.shift === 'NIGHT' || payload.shift === 'FLEX' ? payload.shift : 'DAY';
+    const specialty = payload.specialty || null;
+    const phone = payload.phone || null;
+    const joinedDate = payload.joinedDate || null;
+    const salary = resolveStaffSalary(role);
 
     const hostel = await query('SELECT TOP 1 id FROM Hostels WHERE id = ?', [hostelId]);
     if (!hostel || hostel.length === 0) {
@@ -1740,7 +2781,21 @@ app.put('/api/staff/:id', async (req, res) => {
       'UPDATE Users SET name = ?, email = ?, role = ?, hostelId = ? WHERE id = ?',
       [payload.name, payload.email, role, hostelId, id]
     );
-    res.json({ ...payload, id, role, hostelId });
+
+    const profileRows = await query('SELECT TOP 1 id FROM StaffProfiles WHERE userId = ?', [id]);
+    if (!profileRows || profileRows.length === 0) {
+      await query(
+        'INSERT INTO StaffProfiles (userId, phone, employmentStatus, [shift], specialty, joinedDate, salary) VALUES (?, ?, ?, ?, ?, ?, ?)',
+        [id, phone, employmentStatus, shift, specialty, joinedDate, salary]
+      );
+    } else {
+      await query(
+        'UPDATE StaffProfiles SET phone = ?, employmentStatus = ?, [shift] = ?, specialty = ?, joinedDate = ?, salary = ? WHERE userId = ?',
+        [phone, employmentStatus, shift, specialty, joinedDate, salary, id]
+      );
+    }
+
+    res.json({ ...payload, id, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate, salary: resolveStaffSalary(role) });
   } catch (err) {
     console.error('Update staff error:', err);
     res.status(500).json({ message: err.message || 'Internal server error' });
@@ -1750,6 +2805,7 @@ app.put('/api/staff/:id', async (req, res) => {
 app.delete('/api/staff/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
+    await query('DELETE FROM StaffProfiles WHERE userId = ?', [id]);
     await query('DELETE FROM Users WHERE id = ?', [id]);
     res.status(204).send();
   } catch (err) {
@@ -1768,6 +2824,26 @@ app.get('/api/users', async (req, res) => {
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+
+app.get('/api/users/balance', async (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) {
+      return res.status(400).json({ message: 'email is required' });
+    }
+
+    const rows = await query('SELECT TOP 1 id, name, email, role, balance FROM Users WHERE email = ?', [email]);
+    if (!rows || rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const user = rows[0];
+    res.json({ id: user.id, name: user.name, email: user.email, role: user.role, balance: Number(user.balance || 0) });
+  } catch (err) {
+    console.error('Get user balance error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
 /* =========================
    STUDENT APPLY FOR ROOM
 ========================= */
@@ -1778,6 +2854,11 @@ app.post('/api/room-requests', async (req, res) => {
     let resolvedStudentId = toNullableInt(studentId);
 
     if (!resolvedStudentId && studentEmail) {
+      const account = await query('SELECT TOP 1 role FROM Users WHERE LOWER(email) = LOWER(?)', [studentEmail]);
+      if (account && account.length > 0 && String(account[0].role || '').toUpperCase() !== 'STUDENT') {
+        return res.status(403).json({ message: 'Only students can request rooms' });
+      }
+
       const student = await getStudentByEmail(studentEmail);
       resolvedStudentId = student?.id || null;
     }
@@ -1796,24 +2877,32 @@ app.post('/api/room-requests', async (req, res) => {
       [roomId, 'ACTIVE']
     );
     const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
-    if (activeCount >= Number(room[0].capacity || 0)) {
-      await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
+    const reservedCount = await getReservedSeatCountForRoom(roomId);
+    if ((activeCount + reservedCount) >= Number(room[0].capacity || 0)) {
       return res.status(400).json({ message: 'Room is at full capacity' });
     }
 
-    const existingAllocation = await query('SELECT * FROM Allocations WHERE studentId = ? AND status = ?', [resolvedStudentId, 'ACTIVE']);
-    if (existingAllocation && existingAllocation.length > 0) {
-      return res.status(400).json({ message: 'Student already has an active room allocation' });
+    const activeAllocation = await getActiveAllocationForStudent(resolvedStudentId);
+    if (activeAllocation && Number(activeAllocation.roomId) === Number(roomId)) {
+      return res.status(400).json({ message: 'You are already allocated to this room' });
     }
 
     // Check if student already has a pending or approved request for this room
     const existingRequest = await query(
-      'SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN (?, ?)',
-      [resolvedStudentId, roomId, 'PENDING', 'APPROVED']
+      "SELECT * FROM RoomRequests WHERE studentId = ? AND roomId = ? AND status IN ('PENDING', 'APPROVED', 'APPROVED_WAITING_SHIFT')",
+      [resolvedStudentId, roomId]
     );
 
     if (existingRequest && existingRequest.length > 0) {
       return res.status(400).json({ message: 'You have already requested this room' });
+    }
+
+    const activeReservation = await query(
+      "SELECT TOP 1 id FROM RoomRequests WHERE studentId = ? AND status IN ('PENDING', 'APPROVED_WAITING_SHIFT') ORDER BY id DESC",
+      [resolvedStudentId]
+    );
+    if (activeReservation && activeReservation.length > 0) {
+      return res.status(400).json({ message: 'You already have an active room reservation request' });
     }
 
     // Create the request
@@ -1881,18 +2970,32 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
 
     const currentRequest = request[0];
     if (currentRequest.status === 'APPROVED') {
-      return res.json({ message: 'Approved successfully' });
+      return res.json({ message: 'Approved successfully', status: 'APPROVED' });
     }
-    if (currentRequest.status !== 'PENDING') {
-      return res.status(400).json({ message: 'Only pending requests can be approved' });
+    if (!['PENDING', 'APPROVED_WAITING_SHIFT'].includes(currentRequest.status)) {
+      return res.status(400).json({ message: 'Only pending or waiting-shift requests can be approved' });
     }
 
-    const existingAllocation = await query(
-      'SELECT * FROM Allocations WHERE studentId = ? AND status = ?',
-      [currentRequest.studentId, 'ACTIVE']
-    );
-    if (existingAllocation && existingAllocation.length > 0) {
-      return res.status(400).json({ message: 'Student already has an active room allocation' });
+    const activeAllocation = await getActiveAllocationForStudent(currentRequest.studentId);
+    if (activeAllocation && Number(activeAllocation.roomId) === Number(currentRequest.roomId)) {
+      await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['APPROVED', requestId]);
+      await query('DELETE FROM RoomRequests WHERE studentId = ? AND id <> ?', [currentRequest.studentId, requestId]);
+      return res.json({ message: 'Approved successfully', status: 'APPROVED', bedId: activeAllocation.bedId || null });
+    }
+
+    if (activeAllocation) {
+      const eligibility = await getRoomChangeEligibility(currentRequest.studentId, activeAllocation);
+      if (!eligibility.canRequestRoomChange) {
+        await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['APPROVED_WAITING_SHIFT', requestId]);
+        await syncRoomStatus(currentRequest.roomId);
+        return res.status(202).json({
+          message: `Approved and reserved. Student can shift after ${ROOM_CHANGE_MIN_DAYS} days in current room`,
+          status: 'APPROVED_WAITING_SHIFT',
+          daysUsed: eligibility.daysUsed,
+          daysUntilRoomChangeAllowed: eligibility.daysUntilRoomChangeAllowed,
+          roomChangeEligibleAt: eligibility.roomChangeEligibleAt,
+        });
+      }
     }
 
     await query('BEGIN TRANSACTION');
@@ -1907,7 +3010,8 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
         [currentRequest.roomId, 'ACTIVE']
       );
       const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
-      if (activeCount >= Number(room[0].capacity || 0)) {
+      const reservedCount = await getReservedSeatCountForRoom(currentRequest.roomId, requestId);
+      if ((activeCount + reservedCount) >= Number(room[0].capacity || 0)) {
         throw new Error('Room is at full capacity');
       }
 
@@ -1916,6 +3020,18 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
       const bedId = getRowId(bed);
       if (!bedId) {
         throw new Error('Room is at full capacity');
+      }
+
+      if (activeAllocation) {
+        await query(
+          'UPDATE Allocations SET status = ?, checkOutDate = GETDATE() WHERE id = ? AND status = ?',
+          ['COMPLETED', activeAllocation.id, 'ACTIVE']
+        );
+        if (activeAllocation.bedId) {
+          await closeActiveStayRecord(currentRequest.studentId, activeAllocation.bedId);
+          await query('UPDATE Beds SET status = ? WHERE id = ?', ['AVAILABLE', activeAllocation.bedId]);
+        }
+        await syncRoomStatus(activeAllocation.roomId);
       }
 
       await query(
@@ -1929,18 +3045,16 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
       await query('UPDATE Beds SET status = ? WHERE id = ?', ['OCCUPIED', bedId]);
 
       const activeBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [currentRequest.roomId, 'OCCUPIED']);
-      const newStatus = Number(activeBeds?.[0]?.count || 0) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
+      const roomReservedCount = await getReservedSeatCountForRoom(currentRequest.roomId, requestId);
+      const newStatus = (Number(activeBeds?.[0]?.count || 0) + roomReservedCount) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
       await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, currentRequest.roomId]);
-
-      if (newStatus === 'OCCUPIED') {
-        await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [currentRequest.roomId, 'PENDING']);
-      }
 
       await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['APPROVED', requestId]);
       await query('DELETE FROM RoomRequests WHERE studentId = ? AND id <> ?', [currentRequest.studentId, requestId]);
+      await triggerOccupancySnapshot();
       await query('COMMIT TRANSACTION');
 
-      res.json({ message: 'Approved successfully', bedId });
+      res.json({ message: 'Approved successfully', status: 'APPROVED', bedId });
     } catch (approveError) {
       await query('ROLLBACK TRANSACTION');
       throw approveError;
@@ -1953,23 +3067,125 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
     }
     res.status(500).json({ message });
   }
-})
+});
+
+/* =========================
+   ADMIN DISAPPROVE REQUEST
+========================= */
+app.put('/api/room-requests/:id/disapprove', async (req, res) => {
+  try {
+    const requestId = Number(req.params.id);
+    const request = await query(
+      'SELECT TOP 1 rr.id, rr.studentId, rr.roomId, rr.status FROM RoomRequests rr WHERE rr.id = ?',
+      [requestId]
+    );
+
+    if (!request || request.length === 0) {
+      return res.status(404).json({ message: 'Room request not found' });
+    }
+
+    const currentRequest = request[0];
+    const currentStatus = String(currentRequest.status || '').toUpperCase();
+
+    if (currentStatus === 'APPROVED') {
+      return res.status(400).json({ message: 'Approved request cannot be disapproved' });
+    }
+
+    if (currentStatus === 'DISAPPROVED') {
+      return res.json({ message: 'Already disapproved', status: 'DISAPPROVED' });
+    }
+
+    if (!['PENDING', 'APPROVED_WAITING_SHIFT'].includes(currentStatus)) {
+      return res.status(400).json({ message: 'Only pending or waiting-shift requests can be disapproved' });
+    }
+
+    await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['DISAPPROVED', requestId]);
+    await syncRoomStatus(currentRequest.roomId);
+
+    return res.json({ message: 'Room request disapproved successfully', status: 'DISAPPROVED' });
+  } catch (err) {
+    console.error('Disapprove room request error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+/* =========================
+   CANCEL/DELETE ROOM REQUEST
+========================= */
+app.delete('/api/room-requests/:id', async (req, res) => {
+  try {
+    const requestId = Number(req.params.id);
+    
+    const request = await query(
+      'SELECT TOP 1 rr.id, rr.studentId, rr.roomId, rr.status FROM RoomRequests rr WHERE rr.id = ?',
+      [requestId]
+    );
+
+    if (!request || request.length === 0) {
+      return res.status(404).json({ message: 'Room request not found' });
+    }
+
+    const currentRequest = request[0];
+
+    // Only allow canceling PENDING requests
+    if (currentRequest.status !== 'PENDING') {
+      return res.status(400).json({ message: 'Only pending requests can be cancelled' });
+    }
+
+    // Delete the request
+    await query('DELETE FROM RoomRequests WHERE id = ?', [requestId]);
+
+    // Update room status after cancellation
+    await syncRoomStatus(currentRequest.roomId);
+
+    res.json({ message: 'Room request cancelled successfully' });
+  } catch (err) {
+    console.error('Cancel room request error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
 
 app.get('/api/reports/occupancy', async (req, res) => {
   try {
+    await recordOccupancySnapshot();
+
+    // Return latest snapshot per room so report always contains all rooms.
     const result = await query(`
+      WITH LatestPerRoom AS (
+        SELECT
+          r.id,
+          r.roomId,
+          r.occupiedBeds,
+          r.totalBeds,
+          ROW_NUMBER() OVER (
+            PARTITION BY r.roomId
+            ORDER BY r.reportDate DESC, r.id DESC
+          ) AS rn
+        FROM dbo.OccupancyReport r
+      ),
+      RoomActivity AS (
+        SELECT
+          a.roomId,
+          MAX(a.checkInDate) AS lastAllocationAt
+        FROM dbo.Allocations a
+        GROUP BY a.roomId
+      )
       SELECT
-        r.id,
-        r.id AS roomId,
-        r.roomNumber,
-        r.capacity,
-        COUNT(CASE WHEN b.status = 'OCCUPIED' THEN 1 END) AS occupied,
-        (r.capacity - COUNT(CASE WHEN b.status = 'OCCUPIED' THEN 1 END)) AS available,
-        GETDATE() AS reportDate
-      FROM Rooms r
-      LEFT JOIN Beds b ON b.roomId = r.id
-      GROUP BY r.id, r.roomNumber, r.capacity
-      ORDER BY r.roomNumber
+        l.id,
+        l.roomId,
+        rm.roomNumber,
+        l.totalBeds AS capacity,
+        l.occupiedBeds AS occupied,
+        l.totalBeds - l.occupiedBeds AS available,
+        CASE
+          WHEN ra.lastAllocationAt IS NULL THEN NULL
+          ELSE CONVERT(VARCHAR(33), TODATETIMEOFFSET(ra.lastAllocationAt, DATEPART(TZOFFSET, SYSDATETIMEOFFSET())), 127)
+        END AS lastAllocationAt
+      FROM LatestPerRoom l
+      LEFT JOIN Rooms rm ON rm.id = l.roomId
+      LEFT JOIN RoomActivity ra ON ra.roomId = l.roomId
+      WHERE l.rn = 1
+      ORDER BY rm.roomNumber ASC
     `);
     res.json(result);
   } catch (err) {
@@ -1977,6 +3193,31 @@ app.get('/api/reports/occupancy', async (req, res) => {
     res.status(500).json({ message: 'Error fetching report' });
   }
 });
+
+// Helper function to record occupancy snapshot
+async function recordOccupancySnapshot() {
+  try {
+    await query(`
+      INSERT INTO dbo.OccupancyReport (roomId, occupiedBeds, totalBeds, reportDate)
+      SELECT
+        r.id,
+        COUNT(CASE WHEN b.status = 'OCCUPIED' THEN 1 END) AS occupiedBeds,
+        r.capacity AS totalBeds,
+        GETDATE()
+      FROM Rooms r
+      LEFT JOIN Beds b ON b.roomId = r.id
+      GROUP BY r.id, r.capacity
+    `);
+  } catch (err) {
+    console.error('Error recording occupancy snapshot:', err);
+  }
+}
+
+// Record occupancy on room checkout/allocation changes
+async function triggerOccupancySnapshot() {
+  // This will be called after finalize shift or allocation changes
+  await recordOccupancySnapshot();
+}
 
 app.get('/api/reports/dues', async (req, res) => {
   try {
@@ -2123,22 +3364,31 @@ app.post('/api/allocations', async (req, res) => {
         try {
           if (!existingUserRows || existingUserRows.length === 0) {
             await query(
-              'INSERT INTO Users (name, email, password, role, hostelId) VALUES (?, ?, ?, ?, ?)',
-              [studentData.name, studentEmail, studentData.password, 'STUDENT', null]
+              'INSERT INTO Users (name, email, password, role, hostelId, balance) VALUES (?, ?, ?, ?, ?, ?)',
+              [studentData.name, studentEmail, studentData.password, 'STUDENT', null, getInitialBalanceByRole('STUDENT')]
             );
           }
 
+          const linkedUserRows = await query('SELECT TOP 1 id FROM Users WHERE email = ? AND role = ? ORDER BY id DESC', [studentEmail, 'STUDENT']);
+          const linkedUserId = linkedUserRows?.[0]?.id || null;
+          if (!linkedUserId) {
+            throw new Error('Unable to create linked student user');
+          }
+
+          const registrationNumber = await getNextRegistrationNumber();
+
           await query(
-            'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+            'INSERT INTO Students (name, email, phone, registrationNumber, department, yearOfStudy, status, password, userId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
             [
               studentData.name,
               studentEmail,
               studentData.phone || '',
-              studentData.registrationNumber || '',
+              registrationNumber,
               studentData.department || '',
               toIntOrDefault(studentData.yearOfStudy, 1),
               'ACTIVE',
               studentData.password,
+              linkedUserId,
             ]
           );
 
@@ -2174,7 +3424,8 @@ app.post('/api/allocations', async (req, res) => {
       [roomId, 'ACTIVE']
     );
     const activeCount = Number(activeAllocationsForRoom?.[0]?.count || 0);
-    if (activeCount >= Number(room[0].capacity || 0)) {
+    const reservedCount = await getReservedSeatCountForRoom(roomId);
+    if ((activeCount + reservedCount) >= Number(room[0].capacity || 0)) {
       return res.status(400).json({ message: 'Room is at full capacity' });
     }
 
@@ -2193,12 +3444,10 @@ app.post('/api/allocations', async (req, res) => {
     
     // Update room status if now full
     const activeBeds = await query('SELECT COUNT(*) AS count FROM Beds WHERE roomId = ? AND status = ?', [roomId, 'OCCUPIED']);
-    const newStatus = Number(activeBeds?.[0]?.count || 0) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
+    const refreshedReservedCount = await getReservedSeatCountForRoom(roomId);
+    const newStatus = (Number(activeBeds?.[0]?.count || 0) + refreshedReservedCount) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
     await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
-
-    if (newStatus === 'OCCUPIED') {
-      await query('DELETE FROM RoomRequests WHERE roomId = ? AND status = ?', [roomId, 'PENDING']);
-    }
+    await triggerOccupancySnapshot();
     
     const createdAllocation = await query(
       `SELECT TOP 1 a.id, a.studentId, a.roomId, a.bedId, a.checkInDate, a.checkOutDate, a.status,
@@ -2243,6 +3492,7 @@ app.put('/api/allocations/:id', async (req, res) => {
     );
 
     const currentBed = existing[0].bedId ?? null;
+    await triggerOccupancySnapshot();
     res.json({ id, studentId: studentId ?? existing[0].studentId, roomId: roomId ?? existing[0].roomId, checkInDate, checkOutDate, status, bedId: currentBed });
   } catch (err) {
     console.error('Update allocation error:', err);
@@ -2272,6 +3522,7 @@ app.delete('/api/allocations/:id', async (req, res) => {
     
     // Update room status
     await syncRoomStatus(roomId);
+    await triggerOccupancySnapshot();
     
     res.status(204).send();
   } catch (err) {
@@ -2449,8 +3700,8 @@ app.get('/api/analytics/students', async (req, res) => {
     const registrationYearQuery = `
       SELECT
         CASE
-          WHEN LEN(registrationNumber) >= 4 AND ISNUMERIC(LEFT(registrationNumber, 4)) = 1
-          THEN LEFT(registrationNumber, 4)
+          WHEN PATINDEX('%[0-9]%', registrationNumber) > 0
+          THEN CAST(TRY_CAST(SUBSTRING(registrationNumber, PATINDEX('%[0-9]%', registrationNumber), LEN(registrationNumber)) AS INT) AS NVARCHAR(20))
           ELSE 'Unknown'
         END as registration_year,
         COUNT(*) as count
@@ -2458,11 +3709,11 @@ app.get('/api/analytics/students', async (req, res) => {
       WHERE registrationNumber IS NOT NULL AND registrationNumber != ''
       GROUP BY
         CASE
-          WHEN LEN(registrationNumber) >= 4 AND ISNUMERIC(LEFT(registrationNumber, 4)) = 1
-          THEN LEFT(registrationNumber, 4)
+          WHEN PATINDEX('%[0-9]%', registrationNumber) > 0
+          THEN CAST(TRY_CAST(SUBSTRING(registrationNumber, PATINDEX('%[0-9]%', registrationNumber), LEN(registrationNumber)) AS INT) AS NVARCHAR(20))
           ELSE 'Unknown'
         END
-      ORDER BY registration_year DESC
+      ORDER BY TRY_CAST(registration_year AS INT) DESC
     `;
     const registrationYearResult = await query(registrationYearQuery);
 
@@ -2619,8 +3870,15 @@ app.post('/api/payments/initiate', async (req, res) => {
       }
     } catch (providerError) {
       console.error('❌ [PAYMENT INITIATE] External provider integration failed:', providerError);
-      await query('UPDATE Payments SET status = ? WHERE transaction_id = ?', ['FAILED', transactionId]);
-      return res.status(502).json({ message: 'Payment provider initialization failed' });
+      // Demo-safe fallback for local testing without provider credentials.
+      redirectUrl = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}&method=${encodeURIComponent(method)}&paymentType=STUDENT`;
+      return res.json({
+        transactionId,
+        redirectUrl,
+        amount,
+        method,
+        message: 'Payment initialized in demo mode (provider unavailable)',
+      });
     }
 
     console.log('✅ [PAYMENT INITIATE] Success:', { transactionId, redirectUrl });
@@ -2667,13 +3925,68 @@ app.all('/api/payments/callback/redirect', async (req, res) => {
     }
 
     console.log('💾 [PAYMENT REDIRECT CALLBACK] Updating payment status:', { transactionId, newStatus, reference });
-    await query('UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?', [newStatus, reference || '', transactionId]);
+    if (newStatus === 'SUCCESS' && String(existingPayment.status || '').toUpperCase() === 'PENDING') {
+      await query(
+        `BEGIN TRY
+           BEGIN TRAN;
 
-    if (newStatus === 'SUCCESS' && existingPayment.invoiceId) {
-      await query('UPDATE Invoices SET status = ? WHERE id = ?', ['PAID', existingPayment.invoiceId]);
+           DECLARE @payerUserId INT;
+           DECLARE @adminUserId INT;
+
+           SELECT TOP 1 @payerUserId = userId FROM Students WHERE id = ?;
+           SELECT TOP 1 @adminUserId = id FROM Users WHERE role = 'ADMIN' ORDER BY id ASC;
+
+           IF @payerUserId IS NULL OR @adminUserId IS NULL
+           BEGIN
+             RAISERROR('Payer or admin account not found for transfer.', 16, 1);
+           END
+
+           IF (SELECT balance FROM Users WHERE id = @payerUserId) < ?
+           BEGIN
+             RAISERROR('Insufficient balance to complete payment.', 16, 1);
+           END
+
+           UPDATE Users SET balance = balance - ? WHERE id = @payerUserId;
+           UPDATE Users SET balance = balance + ? WHERE id = @adminUserId;
+
+           UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?;
+
+           IF ? IS NOT NULL
+           BEGIN
+             UPDATE Invoices SET status = ? WHERE id = ?;
+           END
+
+           COMMIT TRAN;
+         END TRY
+         BEGIN CATCH
+           IF @@TRANCOUNT > 0
+             ROLLBACK TRAN;
+
+           DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+           RAISERROR(@Err, 16, 1);
+         END CATCH`,
+        [
+          existingPayment.studentId,
+          Number(existingPayment.amount || 0),
+          Number(existingPayment.amount || 0),
+          Number(existingPayment.amount || 0),
+          'SUCCESS',
+          reference || '',
+          transactionId,
+          existingPayment.invoiceId || null,
+          'PAID',
+          existingPayment.invoiceId || null,
+        ]
+      );
+    } else {
+      await query('UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?', [newStatus, reference || '', transactionId]);
+      if (newStatus === 'SUCCESS' && existingPayment.invoiceId) {
+        await query('UPDATE Invoices SET status = ? WHERE id = ?', ['PAID', existingPayment.invoiceId]);
+      }
     }
 
-    const redirectAfter = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}`;
+    const method = existingPayment?.method || 'BKASH';
+    const redirectAfter = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}&method=${encodeURIComponent(method)}&paymentType=STUDENT`;
     return res.redirect(302, redirectAfter);
   } catch (err) {
     console.error('❌ [PAYMENT REDIRECT CALLBACK] Server error:', err);
@@ -2702,20 +4015,61 @@ app.post('/api/payments/callback/success', async (req, res) => {
 
     console.log('✅ [PAYMENT SUCCESS] Payment found:', payment[0]);
 
-    // Update payment
-    console.log('💾 [PAYMENT SUCCESS] Updating payment to SUCCESS status...');
+    // Update payment + transfer student balance to admin balance atomically
+    console.log('💾 [PAYMENT SUCCESS] Updating payment to SUCCESS status with wallet transfer...');
+    const pendingPayment = payment[0];
     await query(
-      'UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?',
-      ['SUCCESS', reference || '', transaction_id]
-    );
+      `BEGIN TRY
+         BEGIN TRAN;
 
-    // Update invoice status if fully paid
-    const invoiceId = payment[0].invoiceId;
-    if (invoiceId) {
-      console.log('💾 [PAYMENT SUCCESS] Updating invoice status to PAID:', invoiceId);
-      await query('UPDATE Invoices SET status = ? WHERE id = ?', ['PAID', invoiceId]);
-      console.log('✅ [PAYMENT SUCCESS] Invoice updated:', invoiceId);
-    }
+         DECLARE @payerUserId INT;
+         DECLARE @adminUserId INT;
+
+         SELECT TOP 1 @payerUserId = userId FROM Students WHERE id = ?;
+         SELECT TOP 1 @adminUserId = id FROM Users WHERE role = 'ADMIN' ORDER BY id ASC;
+
+         IF @payerUserId IS NULL OR @adminUserId IS NULL
+         BEGIN
+           RAISERROR('Payer or admin account not found for transfer.', 16, 1);
+         END
+
+         IF (SELECT balance FROM Users WHERE id = @payerUserId) < ?
+         BEGIN
+           RAISERROR('Insufficient balance to complete payment.', 16, 1);
+         END
+
+         UPDATE Users SET balance = balance - ? WHERE id = @payerUserId;
+         UPDATE Users SET balance = balance + ? WHERE id = @adminUserId;
+
+         UPDATE Payments SET status = ?, reference = ? WHERE transaction_id = ?;
+
+         IF ? IS NOT NULL
+         BEGIN
+           UPDATE Invoices SET status = ? WHERE id = ?;
+         END
+
+         COMMIT TRAN;
+       END TRY
+       BEGIN CATCH
+         IF @@TRANCOUNT > 0
+           ROLLBACK TRAN;
+
+         DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+         RAISERROR(@Err, 16, 1);
+       END CATCH`,
+      [
+        pendingPayment.studentId,
+        Number(pendingPayment.amount || 0),
+        Number(pendingPayment.amount || 0),
+        Number(pendingPayment.amount || 0),
+        'SUCCESS',
+        reference || '',
+        transaction_id,
+        pendingPayment.invoiceId || null,
+        'PAID',
+        pendingPayment.invoiceId || null,
+      ]
+    );
 
     console.log('✅ [PAYMENT SUCCESS] Payment processed successfully:', transaction_id);
 
@@ -2780,7 +4134,7 @@ app.get('/api/payments/status/:transactionId', async (req, res) => {
       method: record.method,
       status: record.status,
       reference: record.reference || null,
-      createdAt: record.created_at,
+      createdAt: record.created_at ? new Date(record.created_at).toISOString() : null,
     });
   } catch (err) {
     console.error('❌ [PAYMENT STATUS] Server error:', err);
@@ -2813,7 +4167,11 @@ app.get('/api/payments', async (req, res) => {
     sql += ' ORDER BY p.created_at DESC';
 
     const result = await query(sql, params);
-    res.json(result);
+    res.json((result || []).map((row) => ({
+      ...row,
+      paymentDate: row.paymentDate ? new Date(row.paymentDate).toISOString() : null,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    })));
   } catch (err) {
     console.error('Get payments error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -2835,12 +4193,619 @@ app.get('/api/payments/:id', async (req, res) => {
       return res.status(404).json({ message: 'Payment not found' });
     }
 
-    res.json(result[0]);
+    const row = result[0];
+    res.json({
+      ...row,
+      paymentDate: row.paymentDate ? new Date(row.paymentDate).toISOString() : null,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    });
   } catch (err) {
     console.error('Get payment error:', err);
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+
+app.get('/api/staff-payments', async (req, res) => {
+  try {
+    const { staffUserId, status, cycleMonth, cycleYear } = req.query;
+    let sql = `
+      SELECT sp.*, staff.name AS staffName, staff.email AS staffEmail,
+             initiator.name AS initiatedByName
+      FROM StaffPayments sp
+      INNER JOIN Users staff ON sp.staffUserId = staff.id
+      LEFT JOIN Users initiator ON sp.initiatedByUserId = initiator.id
+    `;
+    const params = [];
+
+    if (staffUserId) {
+      sql += ' WHERE sp.staffUserId = ?';
+      params.push(toIntOrDefault(staffUserId, 0));
+    }
+
+    if (status) {
+      sql += params.length > 0 ? ' AND' : ' WHERE';
+      sql += ' sp.status = ?';
+      params.push(String(status).toUpperCase());
+    }
+
+    if (cycleMonth) {
+      sql += params.length > 0 ? ' AND' : ' WHERE';
+      sql += ' sp.cycleMonth = ?';
+      params.push(toIntOrDefault(cycleMonth, 0));
+    }
+
+    if (cycleYear) {
+      sql += params.length > 0 ? ' AND' : ' WHERE';
+      sql += ' sp.cycleYear = ?';
+      params.push(toIntOrDefault(cycleYear, 0));
+    }
+
+    sql += ' ORDER BY sp.created_at DESC';
+    const result = await query(sql, params);
+    res.json(result);
+  } catch (err) {
+    console.error('Get staff payments error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/staff-payments/me', async (req, res) => {
+  try {
+    const email = req.query.email;
+    if (!email) {
+      return res.status(400).json({ message: 'email is required' });
+    }
+
+    const staffRows = await query("SELECT TOP 1 id, role FROM Users WHERE email = ?", [email]);
+    if (!staffRows || staffRows.length === 0) {
+      return res.status(404).json({ message: 'Staff account not found' });
+    }
+
+    if (!['WARDEN', 'CARETAKER'].includes(staffRows[0].role)) {
+      return res.status(400).json({ message: 'User is not a staff account' });
+    }
+
+    const result = await query(`
+      SELECT sp.*, staff.name AS staffName, staff.email AS staffEmail,
+             initiator.name AS initiatedByName
+      FROM StaffPayments sp
+      INNER JOIN Users staff ON sp.staffUserId = staff.id
+      LEFT JOIN Users initiator ON sp.initiatedByUserId = initiator.id
+      WHERE sp.staffUserId = ?
+      ORDER BY sp.created_at DESC
+    `, [staffRows[0].id]);
+
+    res.json(result);
+  } catch (err) {
+    console.error('Get my staff payments error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.get('/api/staff-salary-prompts', async (req, res) => {
+  try {
+    const { email } = req.query;
+    let sql = `
+      SELECT p.*, staff.name AS staffName, staff.email AS staffEmail, resolver.name AS resolvedByName
+      FROM StaffSalaryPrompts p
+      INNER JOIN Users staff ON staff.id = p.staffUserId
+      LEFT JOIN Users resolver ON resolver.id = p.resolvedByUserId
+    `;
+    const params = [];
+
+    if (email) {
+      const rows = await query('SELECT TOP 1 id, role FROM Users WHERE email = ?', [email]);
+      if (!rows || rows.length === 0) {
+        return res.status(404).json({ message: 'User not found' });
+      }
+
+      const user = rows[0];
+      if (user.role === 'WARDEN' || user.role === 'CARETAKER') {
+        sql += ' WHERE p.staffUserId = ?';
+        params.push(user.id);
+      }
+    }
+
+    sql += ' ORDER BY p.created_at DESC';
+    const result = await query(sql, params);
+    res.json(result || []);
+  } catch (err) {
+    console.error('Get staff salary prompts error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+app.post('/api/staff-salary-prompts', async (req, res) => {
+  try {
+    const { staffEmail, message } = req.body || {};
+    if (!staffEmail) {
+      return res.status(400).json({ message: 'staffEmail is required' });
+    }
+
+    const staffRows = await query('SELECT TOP 1 id, role FROM Users WHERE email = ?', [staffEmail]);
+    if (!staffRows || staffRows.length === 0) {
+      return res.status(404).json({ message: 'Staff not found' });
+    }
+
+    const staff = staffRows[0];
+    if (!['WARDEN', 'CARETAKER'].includes(staff.role)) {
+      return res.status(400).json({ message: 'User is not staff' });
+    }
+
+    const { month, year } = getCurrentCycle();
+    const alreadyPaidRows = await query(
+      `SELECT TOP 1 id FROM StaffPayments WHERE staffUserId = ? AND cycleMonth = ? AND cycleYear = ? AND status = 'SUCCESS'`,
+      [staff.id, month, year]
+    );
+    if (alreadyPaidRows && alreadyPaidRows.length > 0) {
+      return res.status(400).json({ message: 'Salary already paid for current cycle' });
+    }
+
+    const existingPrompt = await query(
+      `SELECT TOP 1 id FROM StaffSalaryPrompts WHERE staffUserId = ? AND cycleMonth = ? AND cycleYear = ? AND status = 'PENDING'`,
+      [staff.id, month, year]
+    );
+    if (existingPrompt && existingPrompt.length > 0) {
+      return res.status(400).json({ message: 'Prompt already sent for current cycle' });
+    }
+
+    await query(
+      `INSERT INTO StaffSalaryPrompts (staffUserId, cycleMonth, cycleYear, message, status, created_at)
+       VALUES (?, ?, ?, ?, 'PENDING', GETDATE())`,
+      [staff.id, month, year, message || 'Salary pending for this month.']
+    );
+
+    res.status(201).json({ message: 'Prompt sent to admin successfully' });
+  } catch (err) {
+    console.error('Create staff salary prompt error:', err);
+    res.status(500).json({ message: err.message || 'Internal server error' });
+  }
+});
+
+app.post('/api/staff-salary-prompts/:id/resolve', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const resolvedByEmail = req.body?.resolvedByEmail;
+    if (!id || !resolvedByEmail) {
+      return res.status(400).json({ message: 'id and resolvedByEmail are required' });
+    }
+
+    const resolverRows = await query("SELECT TOP 1 id, role FROM Users WHERE email = ?", [resolvedByEmail]);
+    if (!resolverRows || resolverRows.length === 0 || resolverRows[0].role !== 'ADMIN') {
+      return res.status(403).json({ message: 'Only admin can resolve prompts' });
+    }
+
+    await query(
+      "UPDATE StaffSalaryPrompts SET status = 'RESOLVED', resolvedByUserId = ?, resolved_at = GETDATE() WHERE id = ?",
+      [resolverRows[0].id, id]
+    );
+
+    res.json({ message: 'Prompt resolved' });
+  } catch (err) {
+    console.error('Resolve staff salary prompt error:', err);
+    res.status(500).json({ message: err.message || 'Internal server error' });
+  }
+});
+
+app.post('/api/staff-payments/initiate', async (req, res) => {
+  try {
+    const {
+      staffUserId,
+      cycleMonth,
+      cycleYear,
+      method = 'BKASH',
+      initiatedByUserId,
+      notes = '',
+    } = req.body || {};
+
+    const resolvedStaffUserId = toIntOrDefault(staffUserId, 0);
+    const resolvedCycleMonth = toIntOrDefault(cycleMonth, 0);
+    const resolvedCycleYear = toIntOrDefault(cycleYear, 0);
+    let resolvedInitiatedBy = toNullableInt(initiatedByUserId);
+    const resolvedMethod = String(method || 'BKASH').toUpperCase() === 'NAGAD' ? 'NAGAD' : 'BKASH';
+
+    if (!resolvedStaffUserId || !resolvedCycleMonth || !resolvedCycleYear) {
+      return res.status(400).json({ message: 'staffUserId, cycleMonth, and cycleYear are required' });
+    }
+    if (resolvedCycleMonth < 1 || resolvedCycleMonth > 12) {
+      return res.status(400).json({ message: 'cycleMonth must be between 1 and 12' });
+    }
+
+    const staffRows = await query('SELECT TOP 1 id, role FROM Users WHERE id = ?', [resolvedStaffUserId]);
+    if (!staffRows || staffRows.length === 0) {
+      return res.status(404).json({ message: 'Staff user not found' });
+    }
+    if (!['WARDEN', 'CARETAKER'].includes(staffRows[0].role)) {
+      return res.status(400).json({ message: 'Target user is not staff' });
+    }
+
+    const salaryRows = await query('SELECT TOP 1 salary FROM StaffProfiles WHERE userId = ?', [resolvedStaffUserId]);
+    const policyAmount = resolveStaffSalary(staffRows[0].role, salaryRows?.[0]?.salary);
+    if (!policyAmount) {
+      return res.status(400).json({ message: 'Salary is not configured for this staff member' });
+    }
+
+    if (!resolvedInitiatedBy) {
+      const adminRows = await query("SELECT TOP 1 id FROM Users WHERE role = 'ADMIN' ORDER BY id ASC");
+      resolvedInitiatedBy = adminRows?.[0]?.id || null;
+    }
+
+    if (!resolvedInitiatedBy) {
+      return res.status(400).json({ message: 'Admin user not found for payment initiation' });
+    }
+
+    const initiatorRows = await query('SELECT TOP 1 id, role FROM Users WHERE id = ?', [resolvedInitiatedBy]);
+    if (!initiatorRows || initiatorRows.length === 0 || initiatorRows[0].role !== 'ADMIN') {
+      return res.status(403).json({ message: 'Only admin can initiate staff salary payments' });
+    }
+
+    const workedRows = await query('SELECT TOP 1 DATEDIFF(day, ISNULL(joinedDate, GETDATE()), GETDATE()) AS workedDays FROM StaffProfiles WHERE userId = ?', [resolvedStaffUserId]);
+    const workedDays = Math.max(0, Number(workedRows?.[0]?.workedDays || 0));
+    if (workedDays < 30) {
+      return res.status(400).json({ message: 'Staff has not completed one month yet' });
+    }
+
+    const resolvedAmount = Number(policyAmount || 0);
+    if (!Number.isFinite(resolvedAmount) || resolvedAmount <= 0) {
+      return res.status(400).json({ message: 'Salary policy produced an invalid amount' });
+    }
+
+    const transactionId = `STAFFPAY_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+
+    await query(
+      `BEGIN TRY
+         BEGIN TRAN;
+
+         IF EXISTS (
+           SELECT 1
+           FROM StaffPayments
+           WHERE staffUserId = ?
+             AND cycleMonth = ?
+             AND cycleYear = ?
+             AND status IN ('PENDING', 'SUCCESS')
+         )
+         BEGIN
+           RAISERROR('Payment cycle already initiated or paid for this staff member.', 16, 1);
+         END
+
+         INSERT INTO StaffPayments (
+           staffUserId,
+           initiatedByUserId,
+           cycleMonth,
+           cycleYear,
+           amount,
+           method,
+           status,
+           transaction_id,
+           notes,
+           created_at
+         )
+         VALUES (?, ?, ?, ?, ?, ?, 'PENDING', ?, ?, GETDATE());
+
+         COMMIT TRAN;
+       END TRY
+       BEGIN CATCH
+         IF @@TRANCOUNT > 0
+           ROLLBACK TRAN;
+
+         DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+         RAISERROR(@Err, 16, 1);
+       END CATCH`,
+      [
+        resolvedStaffUserId,
+        resolvedCycleMonth,
+        resolvedCycleYear,
+        resolvedStaffUserId,
+        resolvedInitiatedBy,
+        resolvedCycleMonth,
+        resolvedCycleYear,
+        resolvedAmount,
+        resolvedMethod,
+        transactionId,
+        notes || '',
+      ]
+    );
+
+    const returnUrl = `${BACKEND_BASE_URL}/api/staff-payments/callback/redirect`;
+
+    let redirectUrl;
+    try {
+      redirectUrl = await getPaymentProviderRedirectUrl({
+        method: resolvedMethod,
+        transactionId,
+        amount: resolvedAmount,
+        invoiceId: null,
+        studentId: resolvedStaffUserId,
+        returnUrl,
+      });
+      if (!redirectUrl) {
+        throw new Error('Payment provider did not return a redirect URL');
+      }
+    } catch (providerError) {
+      // Demo-safe fallback for local testing without provider credentials.
+      redirectUrl = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}&method=${encodeURIComponent(resolvedMethod)}&paymentType=STAFF`;
+      return res.json({
+        transactionId,
+        redirectUrl,
+        amount: resolvedAmount,
+        method: resolvedMethod,
+        cycleMonth: resolvedCycleMonth,
+        cycleYear: resolvedCycleYear,
+        message: 'Staff payment initialized in demo mode (provider unavailable)',
+      });
+    }
+
+    res.json({
+      transactionId,
+      redirectUrl,
+      amount: resolvedAmount,
+      method: resolvedMethod,
+      cycleMonth: resolvedCycleMonth,
+      cycleYear: resolvedCycleYear,
+      message: 'Staff payment initiated successfully',
+    });
+  } catch (err) {
+    console.error('Staff payment initiate error:', err);
+    res.status(500).json({ message: err.message || 'Internal server error' });
+  }
+});
+
+app.all('/api/staff-payments/callback/redirect', async (req, res) => {
+  try {
+    const payload = req.method === 'GET' ? req.query : req.body;
+    const transactionId = payload.transaction_id || payload.transactionId || payload.invoiceNumber || payload.merchantInvoiceNumber;
+    const rawStatus = (payload.status || payload.result || payload.paymentStatus || '').toString().toUpperCase();
+    const reference = payload.reference || payload.paymentId || payload.tranId || payload.transaction_id || '';
+
+    if (!transactionId) {
+      return res.status(400).send('transaction_id is required');
+    }
+
+    const paymentRows = await query('SELECT TOP 1 * FROM StaffPayments WHERE transaction_id = ?', [transactionId]);
+    if (!paymentRows || paymentRows.length === 0) {
+      return res.status(404).send('Staff payment not found');
+    }
+
+    let newStatus = 'FAILED';
+    if (rawStatus.includes('SUCCESS') || rawStatus.includes('PAID') || rawStatus.includes('COMPLETED') || rawStatus === '1' || rawStatus === 'OK') {
+      newStatus = 'SUCCESS';
+    } else if (rawStatus.includes('PENDING')) {
+      newStatus = 'PENDING';
+    }
+
+    if (newStatus === 'SUCCESS' && String(paymentRows[0]?.status || '').toUpperCase() === 'PENDING') {
+      const payment = paymentRows[0];
+      await query(
+        `BEGIN TRY
+           BEGIN TRAN;
+
+           IF (SELECT balance FROM Users WHERE id = ?) < ?
+           BEGIN
+             RAISERROR('Admin has insufficient balance for salary payment.', 16, 1);
+           END
+
+           UPDATE Users SET balance = balance - ? WHERE id = ?;
+           UPDATE Users SET balance = balance + ? WHERE id = ?;
+
+           UPDATE StaffPayments
+           SET status = ?, reference = ?, paidDate = GETDATE()
+           WHERE transaction_id = ?;
+
+           UPDATE StaffSalaryPrompts
+           SET status = 'RESOLVED', resolvedByUserId = ?, resolved_at = GETDATE()
+           WHERE staffUserId = ? AND cycleMonth = ? AND cycleYear = ? AND status = 'PENDING';
+
+           COMMIT TRAN;
+         END TRY
+         BEGIN CATCH
+           IF @@TRANCOUNT > 0
+             ROLLBACK TRAN;
+
+           DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+           RAISERROR(@Err, 16, 1);
+         END CATCH`,
+        [
+          payment.initiatedByUserId,
+          Number(payment.amount || 0),
+          Number(payment.amount || 0),
+          payment.initiatedByUserId,
+          Number(payment.amount || 0),
+          payment.staffUserId,
+          'SUCCESS',
+          reference || '',
+          transactionId,
+          payment.initiatedByUserId,
+          payment.staffUserId,
+          payment.cycleMonth,
+          payment.cycleYear,
+        ]
+      );
+    } else {
+      await query(
+        'UPDATE StaffPayments SET status = ?, reference = ?, paidDate = CASE WHEN ? = ? THEN GETDATE() ELSE paidDate END WHERE transaction_id = ?',
+        [newStatus, reference || '', newStatus, 'SUCCESS', transactionId]
+      );
+    }
+
+    const method = paymentRows[0]?.method || 'BKASH';
+    const redirectAfter = `${FRONTEND_BASE_URL}/payment/process?transaction_id=${encodeURIComponent(transactionId)}&method=${encodeURIComponent(method)}&paymentType=STAFF`;
+    return res.redirect(302, redirectAfter);
+  } catch (err) {
+    console.error('Staff payment redirect callback error:', err);
+    res.status(500).send('Internal server error');
+  }
+});
+
+app.post('/api/staff-payments/callback/success', async (req, res) => {
+  try {
+    const { transaction_id, reference } = req.body || {};
+    if (!transaction_id) {
+      return res.status(400).json({ message: 'transaction_id is required' });
+    }
+
+    const paymentRows = await query('SELECT TOP 1 * FROM StaffPayments WHERE transaction_id = ? AND status = ?', [transaction_id, 'PENDING']);
+    if (!paymentRows || paymentRows.length === 0) {
+      return res.status(404).json({ message: 'Staff payment not found or already processed' });
+    }
+
+    const payment = paymentRows[0];
+    await query(
+      `BEGIN TRY
+         BEGIN TRAN;
+
+         IF (SELECT balance FROM Users WHERE id = ?) < ?
+         BEGIN
+           RAISERROR('Admin has insufficient balance for salary payment.', 16, 1);
+         END
+
+         UPDATE Users SET balance = balance - ? WHERE id = ?;
+         UPDATE Users SET balance = balance + ? WHERE id = ?;
+
+         UPDATE StaffPayments SET status = ?, reference = ?, paidDate = GETDATE() WHERE transaction_id = ?;
+
+         UPDATE StaffSalaryPrompts
+         SET status = 'RESOLVED', resolvedByUserId = ?, resolved_at = GETDATE()
+         WHERE staffUserId = ? AND cycleMonth = ? AND cycleYear = ? AND status = 'PENDING';
+
+         COMMIT TRAN;
+       END TRY
+       BEGIN CATCH
+         IF @@TRANCOUNT > 0
+           ROLLBACK TRAN;
+
+         DECLARE @Err NVARCHAR(4000) = ERROR_MESSAGE();
+         RAISERROR(@Err, 16, 1);
+       END CATCH`,
+      [
+        payment.initiatedByUserId,
+        Number(payment.amount || 0),
+        Number(payment.amount || 0),
+        payment.initiatedByUserId,
+        Number(payment.amount || 0),
+        payment.staffUserId,
+        'SUCCESS',
+        reference || '',
+        transaction_id,
+        payment.initiatedByUserId,
+        payment.staffUserId,
+        payment.cycleMonth,
+        payment.cycleYear,
+      ]
+    );
+
+    res.json({ message: 'Staff payment processed successfully' });
+  } catch (err) {
+    console.error('Staff payment success callback error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  }
+});
+
+app.post('/api/staff-payments/callback/failure', async (req, res) => {
+  try {
+    const { transaction_id } = req.body || {};
+    if (!transaction_id) {
+      return res.status(400).json({ message: 'transaction_id is required' });
+    }
+
+    const paymentRows = await query('SELECT TOP 1 * FROM StaffPayments WHERE transaction_id = ? AND status = ?', [transaction_id, 'PENDING']);
+    if (!paymentRows || paymentRows.length === 0) {
+      return res.status(404).json({ message: 'Staff payment not found or already processed' });
+    }
+
+    await query('UPDATE StaffPayments SET status = ? WHERE transaction_id = ?', ['FAILED', transaction_id]);
+    res.json({ message: 'Staff payment failure recorded' });
+  } catch (err) {
+    console.error('Staff payment failure callback error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  }
+});
+
+app.get('/api/staff-payments/status/:transactionId', async (req, res) => {
+  try {
+    const { transactionId } = req.params;
+    if (!transactionId) {
+      return res.status(400).json({ message: 'transactionId is required' });
+    }
+
+    const paymentRows = await query('SELECT TOP 1 * FROM StaffPayments WHERE transaction_id = ?', [transactionId]);
+    if (!paymentRows || paymentRows.length === 0) {
+      return res.status(404).json({ message: 'Staff payment not found' });
+    }
+
+    const record = paymentRows[0];
+    res.json({
+      transactionId: record.transaction_id,
+      staffUserId: record.staffUserId,
+      cycleMonth: record.cycleMonth,
+      cycleYear: record.cycleYear,
+      amount: record.amount,
+      method: record.method,
+      status: record.status,
+      reference: record.reference || null,
+      paidDate: record.paidDate,
+      createdAt: record.created_at ? new Date(record.created_at).toISOString() : null,
+    });
+  } catch (err) {
+    console.error('Staff payment status error:', err);
+    res.status(500).json({ message: 'Internal server error', error: err.message });
+  }
+});
+
+// Seed sample rooms with varied attributes (one-time safe)
+async function seedSampleRooms() {
+  try {
+    // Check if we already have sample rooms (room numbers starting with specific patterns)
+    const existingRooms = await query("SELECT COUNT(*) AS cnt FROM Rooms WHERE roomNumber IN ('101-AC-WiFi', '102-AC-Bath', '103-WiFi-Balcony', '104-AC-Bath-WiFi', '105-Balcony', '201-Standard', '202-AC', '203-WiFi', '204-Bath', '205-AC-Balcony', '301-AC-WiFi-Bath', '302-AC-WiFi-Balcony', '303-Bath-Balcony', '304-Standard', '305-AC-Bath-WiFi-Balcony')");
+    
+    const count = Number(existingRooms?.[0]?.cnt || 0);
+    if (count > 0) {
+      console.log(`✓ Sample rooms already exist (${count} rooms found)`);
+      return;
+    }
+
+    const sampleRooms = [
+      { roomNumber: '101-AC-WiFi', block: 'Block A', floor: 1, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 1, hasBalcony: 0, hasAttachedBathroom: 0 },
+      { roomNumber: '102-AC-Bath', block: 'Block A', floor: 1, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 0, hasBalcony: 0, hasAttachedBathroom: 1 },
+      { roomNumber: '103-WiFi-Balcony', block: 'Block A', floor: 1, capacity: 2, type: 'SHARED', hasAC: 0, hasWifi: 1, hasBalcony: 1, hasAttachedBathroom: 0 },
+      { roomNumber: '104-AC-Bath-WiFi', block: 'Block A', floor: 1, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 1, hasBalcony: 0, hasAttachedBathroom: 1 },
+      { roomNumber: '105-Balcony', block: 'Block A', floor: 1, capacity: 3, type: 'SHARED', hasAC: 0, hasWifi: 0, hasBalcony: 1, hasAttachedBathroom: 0 },
+      { roomNumber: '201-Standard', block: 'Block B', floor: 2, capacity: 2, type: 'SHARED', hasAC: 0, hasWifi: 0, hasBalcony: 0, hasAttachedBathroom: 0 },
+      { roomNumber: '202-AC', block: 'Block B', floor: 2, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 0, hasBalcony: 0, hasAttachedBathroom: 0 },
+      { roomNumber: '203-WiFi', block: 'Block B', floor: 2, capacity: 2, type: 'SHARED', hasAC: 0, hasWifi: 1, hasBalcony: 0, hasAttachedBathroom: 0 },
+      { roomNumber: '204-Bath', block: 'Block B', floor: 2, capacity: 3, type: 'SHARED', hasAC: 0, hasWifi: 0, hasBalcony: 0, hasAttachedBathroom: 1 },
+      { roomNumber: '205-AC-Balcony', block: 'Block B', floor: 2, capacity: 1, type: 'SINGLE', hasAC: 1, hasWifi: 0, hasBalcony: 1, hasAttachedBathroom: 0 },
+      { roomNumber: '301-AC-WiFi-Bath', block: 'Block C', floor: 3, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 1, hasBalcony: 0, hasAttachedBathroom: 1 },
+      { roomNumber: '302-AC-WiFi-Balcony', block: 'Block C', floor: 3, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 1, hasBalcony: 1, hasAttachedBathroom: 0 },
+      { roomNumber: '303-Bath-Balcony', block: 'Block C', floor: 3, capacity: 2, type: 'SHARED', hasAC: 0, hasWifi: 0, hasBalcony: 1, hasAttachedBathroom: 1 },
+      { roomNumber: '304-Standard', block: 'Block C', floor: 3, capacity: 1, type: 'SINGLE', hasAC: 0, hasWifi: 0, hasBalcony: 0, hasAttachedBathroom: 0 },
+      { roomNumber: '305-AC-Bath-WiFi-Balcony', block: 'Block C', floor: 3, capacity: 1, type: 'SINGLE', hasAC: 1, hasWifi: 1, hasBalcony: 1, hasAttachedBathroom: 1 },
+    ];
+
+    for (const room of sampleRooms) {
+      const computedRent = calculateRoomRentFromAttributes({
+        type: room.type,
+        hasAC: room.hasAC,
+        hasAttachedBathroom: room.hasAttachedBathroom,
+        hasWifi: room.hasWifi,
+        hasBalcony: room.hasBalcony,
+      });
+
+      await query(
+        'INSERT INTO Rooms (roomNumber, block, floor, capacity, type, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, rentalCost, status, hostelId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [room.roomNumber, room.block, room.floor, room.capacity, room.type, room.hasAC, room.hasAttachedBathroom, room.hasWifi, room.hasBalcony, computedRent, 'AVAILABLE', 1]
+      );
+
+      const insertedRoom = await query('SELECT TOP 1 id FROM Rooms WHERE roomNumber = ?', [room.roomNumber]);
+      if (insertedRoom && insertedRoom.length > 0) {
+        await ensureBedsForRoom(insertedRoom[0].id, room.capacity);
+      }
+    }
+
+    console.log(`✓ Seeded ${sampleRooms.length} sample rooms with varied attributes`);
+  } catch (err) {
+    console.error('Error seeding sample rooms:', err);
+  }
+}
 
 // Start server
 async function startServer() {
@@ -2851,6 +4816,8 @@ async function startServer() {
   }
 
   await ensureFeatureTables();
+  await seedSampleRooms();
+  await recordOccupancySnapshot();
 
   app.listen(PORT, () => {
     console.log(`✓ Hostel Management System Backend running on http://localhost:${PORT}/api`);

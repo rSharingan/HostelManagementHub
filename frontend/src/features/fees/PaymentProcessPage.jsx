@@ -16,6 +16,7 @@ export const PaymentProcessPage = () => {
   const [paymentData, setPaymentData] = useState(null)
 
   const transactionId = searchParams.get('transaction_id')
+  const paymentType = (searchParams.get('paymentType') || 'STUDENT').toUpperCase()
   const method = searchParams.get('method') || 'BKASH'
 
   useEffect(() => {
@@ -25,14 +26,28 @@ export const PaymentProcessPage = () => {
       return
     }
 
-    // In a real implementation, you might fetch payment details
-    // For now, we'll simulate
-    setPaymentData({
-      transactionId,
-      method,
-      amount: 1000, // This would come from the payment record
-    })
-  }, [transactionId, method, navigate])
+    const fetchPayment = async () => {
+      try {
+        const endpoint = paymentType === 'STAFF'
+          ? `/staff-payments/status/${transactionId}`
+          : `/payments/status/${transactionId}`
+        const { data } = await axios.get(endpoint)
+        setPaymentData({
+          transactionId,
+          method: data?.method || method,
+          amount: Number(data?.amount || 0),
+        })
+      } catch {
+        setPaymentData({
+          transactionId,
+          method,
+          amount: 0,
+        })
+      }
+    }
+
+    fetchPayment()
+  }, [transactionId, method, navigate, paymentType])
 
   const handlePaymentSuccess = async () => {
     setLoading(true)
@@ -47,13 +62,17 @@ export const PaymentProcessPage = () => {
       
       console.log('📤 Sending success callback with:', successPayload)
       
-      const response = await axios.post('/payments/callback/success', successPayload)
+      const successEndpoint = paymentType === 'STAFF'
+        ? '/staff-payments/callback/success'
+        : '/payments/callback/success'
+
+      const response = await axios.post(successEndpoint, successPayload)
       
       console.log('✅ Payment success callback processed:', response.data)
       toast.success('Payment successful!')
       
       setTimeout(() => {
-        navigate('/fees/invoices')
+        navigate('/fees/payments')
       }, 1500)
     } catch (error) {
       console.error('❌ Payment success callback error:', error)
@@ -76,13 +95,17 @@ export const PaymentProcessPage = () => {
       
       console.log('📤 Sending failure callback with:', failurePayload)
       
-      const response = await axios.post('/payments/callback/failure', failurePayload)
+      const failureEndpoint = paymentType === 'STAFF'
+        ? '/staff-payments/callback/failure'
+        : '/payments/callback/failure'
+
+      const response = await axios.post(failureEndpoint, failurePayload)
       
       console.log('✅ Payment failure callback processed:', response.data)
       toast.error('Payment cancelled')
       
       setTimeout(() => {
-        navigate('/fees/invoices')
+        navigate('/fees/payments')
       }, 1000)
     } catch (error) {
       console.error('❌ Payment failure callback error:', error)
@@ -109,10 +132,10 @@ export const PaymentProcessPage = () => {
       <Card className="w-full max-w-md">
         <CardHeader className="text-center">
           <CardTitle className="text-2xl font-bold">
-            {method === 'BKASH' ? 'bKash' : method === 'NAGAD' ? 'Nagad' : 'Payment'} Payment
+            {method === 'BKASH' ? 'bKash' : method === 'NAGAD' ? 'Nagad' : 'Payment'} {paymentType === 'STAFF' ? 'Staff Salary' : 'Payment'}
           </CardTitle>
           <p className="text-gray-600 dark:text-gray-400">
-            Complete your payment securely
+            Complete your {paymentType === 'STAFF' ? 'salary disbursement' : 'payment'} securely
           </p>
         </CardHeader>
         <CardContent className="space-y-6">

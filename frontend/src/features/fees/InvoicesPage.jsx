@@ -21,6 +21,7 @@ export const InvoicesPage = () => {
     dueDate: '',
     description: '',
   })
+  const [payMethod, setPayMethod] = useState('BKASH')
 
   const handleCreate = async (e) => {
     e.preventDefault()
@@ -61,14 +62,14 @@ export const InvoicesPage = () => {
         invoiceId: row.id,
         studentId: row.studentId,
         amount: row.amount,
-        method: 'BKASH',
+        method: payMethod,
       })
 
       const result = await initiatePayment.mutateAsync({
         invoiceId: row.id,
         studentId: row.studentId,
         amount: row.amount,
-        method: 'BKASH', // Default to bKash
+        method: payMethod,
       })
 
       console.log('✅ Payment initiated successfully. Response:', result)
@@ -158,6 +159,17 @@ export const InvoicesPage = () => {
           <h3 className="text-lg font-semibold">Create Invoice</h3>
         </CardHeader>
         <CardContent>
+          <div className="mb-3 max-w-xs">
+            <label className="block text-sm font-medium text-gray-700 dark:text-dark-300 mb-1">Pay Via</label>
+            <select
+              className="w-full px-3 py-2 border border-gray-300 dark:border-dark-600 rounded-lg bg-white dark:bg-dark-800 text-gray-900 dark:text-dark-50"
+              value={payMethod}
+              onChange={(e) => setPayMethod(e.target.value)}
+            >
+              <option value="BKASH">bKash</option>
+              <option value="NAGAD">Nagad</option>
+            </select>
+          </div>
           <form className="grid grid-cols-1 md:grid-cols-5 gap-3" onSubmit={handleCreate}>
             <Input
               name="studentId"
