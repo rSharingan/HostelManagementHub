@@ -1,6 +1,6 @@
 // path: src/features/roomRequests/RoomRequestsPage.jsx
 import { useMemo } from 'react'
-import { CheckCircle2 } from 'lucide-react'
+import { CheckCircle2, XCircle } from 'lucide-react'
 import { PageHeader } from '../../components/common/PageHeader'
 import { DataTable } from '../../components/common/DataTable'
 import { TableSkeletons } from '../../components/common/Skeletons'
@@ -9,13 +9,14 @@ import { Button } from '../../components/ui/Button'
 import { toast } from 'sonner'
 import { useRooms } from '../rooms/hooks'
 import { useStudents } from '../students/hooks'
-import { useApproveRoomRequest, useRoomRequests } from './hooks'
+import { useApproveRoomRequest, useDisapproveRoomRequest, useRoomRequests } from './hooks'
 
 export const RoomRequestsPage = () => {
   const { data: roomRequests = [], isLoading, error } = useRoomRequests()
   const { data: rooms = [] } = useRooms()
   const { data: students = [] } = useStudents()
   const approveRoomRequest = useApproveRoomRequest()
+  const disapproveRoomRequest = useDisapproveRoomRequest()
 
   const roomLookup = useMemo(
     () => new Map(rooms.map((room) => [String(room.id), room])),
@@ -54,6 +55,15 @@ export const RoomRequestsPage = () => {
     }
   }
 
+  const handleDisapprove = async (requestId) => {
+    try {
+      const result = await disapproveRoomRequest.mutateAsync(requestId)
+      toast.success(result?.message || 'Room request disapproved successfully')
+    } catch (disapproveError) {
+      toast.error(disapproveError?.response?.data?.message || 'Failed to disapprove room request')
+    }
+  }
+
   const columns = [
     {
       header: 'Request ID',
@@ -76,6 +86,8 @@ export const RoomRequestsPage = () => {
               ? 'success'
               : row.original.status === 'APPROVED_WAITING_SHIFT'
                 ? 'warning'
+              : row.original.status === 'DISAPPROVED'
+                ? 'danger'
               : row.original.status === 'PENDING'
                 ? 'warning'
                 : 'default'
@@ -90,6 +102,7 @@ export const RoomRequestsPage = () => {
       cell: ({ row }) => {
         const isApproved = row.original.status === 'APPROVED'
         const isWaitingShift = row.original.status === 'APPROVED_WAITING_SHIFT'
+        const isDisapproved = row.original.status === 'DISAPPROVED'
 
         if (isApproved) {
           return (
@@ -100,17 +113,38 @@ export const RoomRequestsPage = () => {
           )
         }
 
+        if (isDisapproved) {
+          return (
+            <Button variant="danger" size="sm" disabled className="gap-2">
+              <XCircle size={16} />
+              Disapproved
+            </Button>
+          )
+        }
+
         return (
-          <Button
-            variant="warning"
-            size="sm"
-            onClick={() => handleApprove(row.original.id)}
-            disabled={approveRoomRequest.isPending}
-            className="gap-2"
-          >
-            <CheckCircle2 size={16} />
-            {isWaitingShift ? 'Finalize Shift' : 'Approve'}
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="warning"
+              size="sm"
+              onClick={() => handleApprove(row.original.id)}
+              disabled={approveRoomRequest.isPending || disapproveRoomRequest.isPending}
+              className="gap-2"
+            >
+              <CheckCircle2 size={16} />
+              {isWaitingShift ? 'Finalize Shift' : 'Approve'}
+            </Button>
+            <Button
+              variant="danger"
+              size="sm"
+              onClick={() => handleDisapprove(row.original.id)}
+              disabled={approveRoomRequest.isPending || disapproveRoomRequest.isPending}
+              className="gap-2"
+            >
+              <XCircle size={16} />
+              Disapprove
+            </Button>
+          </div>
         )
       },
     },

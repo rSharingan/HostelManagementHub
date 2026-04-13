@@ -9,6 +9,7 @@ import { AnalyticsDashboard } from '../../components/analytics/AnalyticsDashboar
 import { StatCard } from '../../components/common/StatCard'
 import { Button } from '../../components/ui/Button'
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/Card'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
 import axios from '../../lib/api/axios'
 import { API_ENDPOINTS } from '../../lib/api/endpoints'
 import { toast } from 'sonner'
@@ -24,10 +25,16 @@ export const DashboardPage = () => {
   const [payments, setPayments] = useState([])
   const [users, setUsers] = useState([])
   const [rentStatus, setRentStatus] = useState(null)
+  const [staffProfile, setStaffProfile] = useState(null)
   const [isPayingRent, setIsPayingRent] = useState(false)
+  const [isRentDialogOpen, setIsRentDialogOpen] = useState(false)
+  const [rentMethod, setRentMethod] = useState('BKASH')
   const currentStudent = user?.role === 'STUDENT'
     ? students.find((student) => student.email === user.email)
     : null
+  const rentAmount = Number(rentStatus?.monthlyRent || 0)
+  const currentBalance = Number(rentStatus?.currentBalance || 0)
+  const projectedBalance = Math.max(0, currentBalance - rentAmount)
 
   useEffect(() => {
     const fetchData = async () => {
@@ -46,19 +53,25 @@ export const DashboardPage = () => {
           setPayments(paymentsRes.data)
           setUsers(usersRes.data)
         } else if (user?.role === 'WARDEN') {
-          const [roomsRes, complaintsRes, studentsRes, usersRes] = await Promise.all([
+          const [roomsRes, complaintsRes, studentsRes, usersRes, staffRes] = await Promise.all([
             axios.get(API_ENDPOINTS.ROOMS.LIST),
             axios.get(API_ENDPOINTS.COMPLAINTS.LIST),
             axios.get(API_ENDPOINTS.STUDENTS.LIST),
-            axios.get(API_ENDPOINTS.USERS.LIST)
+            axios.get(API_ENDPOINTS.USERS.LIST),
+            axios.get(API_ENDPOINTS.STAFF.LIST)
           ])
           setRooms(roomsRes.data)
           setComplaints(complaintsRes.data)
           setStudents(studentsRes.data)
           setUsers(usersRes.data)
+          setStaffProfile((staffRes.data || []).find((staff) => String(staff.email).toLowerCase() === String(user.email).toLowerCase()) || null)
         } else if (user?.role === 'CARETAKER') {
-          const complaintsRes = await axios.get(API_ENDPOINTS.COMPLAINTS.LIST)
+          const [complaintsRes, staffRes] = await Promise.all([
+            axios.get(API_ENDPOINTS.COMPLAINTS.LIST),
+            axios.get(API_ENDPOINTS.STAFF.LIST),
+          ])
           setComplaints(complaintsRes.data)
+          setStaffProfile((staffRes.data || []).find((staff) => String(staff.email).toLowerCase() === String(user.email).toLowerCase()) || null)
         } else if (user?.role === 'STUDENT') {
           const [roomsRes, paymentsRes, studentsRes, complaintsRes] = await Promise.all([
             axios.get(API_ENDPOINTS.ROOMS.LIST),
@@ -79,6 +92,7 @@ export const DashboardPage = () => {
         setComplaints([])
         setPayments([])
         setUsers([])
+        setStaffProfile(null)
       }
     }
 
@@ -257,6 +271,28 @@ export const DashboardPage = () => {
         breadcrumbs={[{ label: 'Dashboard' }]}
       />
 
+      <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+        <StatCard
+          icon={DollarSign}
+          label="Current Balance"
+          value={formatCurrency(staffProfile?.balance || user?.balance || 0)}
+        />
+        <StatCard
+          icon={DollarSign}
+          label="Monthly Salary"
+          value={formatCurrency(staffProfile?.salary || 0)}
+        />
+        <StatCard
+          icon={AlertCircle}
+          label="Salary Status"
+          value={staffProfile?.currentCyclePaid
+            ? 'Paid for current cycle'
+            : staffProfile?.isSalaryDue
+              ? 'Due now'
+              : `Due in ${Math.max(0, 30 - Number(staffProfile?.workedDays || 0))} day(s)`}
+        />
+      </div>
+
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
           icon={Users}
@@ -396,6 +432,28 @@ export const DashboardPage = () => {
         description="Manage and resolve student complaints"
         breadcrumbs={[{ label: 'Dashboard' }]}
       />
+
+      <div className="mb-6 grid grid-cols-1 md:grid-cols-3 gap-4">
+        <StatCard
+          icon={DollarSign}
+          label="Current Balance"
+          value={formatCurrency(staffProfile?.balance || user?.balance || 0)}
+        />
+        <StatCard
+          icon={DollarSign}
+          label="Monthly Salary"
+          value={formatCurrency(staffProfile?.salary || 0)}
+        />
+        <StatCard
+          icon={AlertCircle}
+          label="Salary Status"
+          value={staffProfile?.currentCyclePaid
+            ? 'Paid for current cycle'
+            : staffProfile?.isSalaryDue
+              ? 'Due now'
+              : `Due in ${Math.max(0, 30 - Number(staffProfile?.workedDays || 0))} day(s)`}
+        />
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard
@@ -578,7 +636,7 @@ export const DashboardPage = () => {
               <Button
                 className="mt-4"
                 disabled={!rentStatus?.canPayNow || isPayingRent}
-                onClick={handlePayRent}
+                onClick={handleOpenRentDialog}
               >
                 {isPayingRent ? 'Processing...' : rentStatus?.canPayNow ? 'Pay Rent' : 'Payment Locked'}
               </Button>
@@ -586,6 +644,48 @@ export const DashboardPage = () => {
           </CardContent>
         </Card>
       </div>
+
+      <Dialog open={isRentDialogOpen} onOpenChange={setIsRentDialogOpen}>
+        <DialogHeader>
+          <DialogTitle>Confirm Rent Payment</DialogTitle>
+        </DialogHeader>
+        <DialogContent className="space-y-4">
+          <div className="rounded-lg border border-gray-200 dark:border-dark-700 p-4 space-y-2 text-sm">
+            <p className="flex items-center justify-between">
+              <span className="text-gray-600 dark:text-dark-400">Amount</span>
+              <span className="font-semibold text-gray-900 dark:text-dark-50">{formatCurrency(rentAmount)}</span>
+            </p>
+            <p className="flex items-center justify-between">
+              <span className="text-gray-600 dark:text-dark-400">Current balance</span>
+              <span className="font-semibold text-gray-900 dark:text-dark-50">{formatCurrency(currentBalance)}</span>
+            </p>
+            <p className="flex items-center justify-between">
+              <span className="text-gray-600 dark:text-dark-400">Balance after payment</span>
+              <span className="font-semibold text-emerald-700 dark:text-emerald-300">{formatCurrency(projectedBalance)}</span>
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-dark-300 mb-1">Payment Method</label>
+            <select
+              className="w-full px-3 py-2 border border-gray-300 dark:border-dark-600 rounded-lg bg-white dark:bg-dark-800 text-gray-900 dark:text-dark-50"
+              value={rentMethod}
+              onChange={(e) => setRentMethod(e.target.value)}
+            >
+              <option value="BKASH">bKash</option>
+              <option value="NAGAD">Nagad</option>
+            </select>
+          </div>
+        </DialogContent>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setIsRentDialogOpen(false)} disabled={isPayingRent}>
+            Cancel
+          </Button>
+          <Button onClick={handlePayRent} disabled={isPayingRent}>
+            {isPayingRent ? 'Processing...' : 'Pay'}
+          </Button>
+        </DialogFooter>
+      </Dialog>
 
       <div className="mt-8">
         <Card>
@@ -645,7 +745,7 @@ export const DashboardPage = () => {
       setIsPayingRent(true)
       await axios.post(API_ENDPOINTS.FEES.RENT_PAY, {
         studentEmail: user.email,
-        method: 'CARD',
+        method: rentMethod,
       })
 
       const [paymentsRes, rentStatusRes] = await Promise.all([
@@ -660,7 +760,13 @@ export const DashboardPage = () => {
       toast.error(error.response?.data?.message || 'Failed to process rent payment')
     } finally {
       setIsPayingRent(false)
+      setIsRentDialogOpen(false)
     }
+  }
+
+  const handleOpenRentDialog = () => {
+    setRentMethod('BKASH')
+    setIsRentDialogOpen(true)
   }
 
   if (!user) return <div>Loading...</div>

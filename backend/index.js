@@ -7,7 +7,8 @@ const app = express();
 const PORT = process.env.PORT || 5000;
 const FRONTEND_BASE_URL = process.env.FRONTEND_BASE_URL || 'http://localhost:5173';
 const BACKEND_BASE_URL = process.env.BACKEND_BASE_URL || `http://localhost:${PORT}`;
-const CARETAKER_FIXED_SALARY = Number(process.env.CARETAKER_FIXED_SALARY || 12000);
+const CARETAKER_FIXED_SALARY = Number(process.env.CARETAKER_FIXED_SALARY || 10000);
+const WARDEN_FIXED_SALARY = Number(process.env.WARDEN_FIXED_SALARY || 20000);
 const ROOM_CHANGE_MIN_DAYS = 31;
 const SHARED_BASE_RENT = Number(process.env.SHARED_BASE_RENT || 2000);
 const SINGLE_BASE_RENT = Number(process.env.SINGLE_BASE_RENT || 4000);
@@ -287,13 +288,26 @@ function getCurrentCycle() {
   return { month: now.getMonth() + 1, year: now.getFullYear() };
 }
 
-function resolveStaffSalary(role, salary) {
-  if (String(role || '').toUpperCase() === 'CARETAKER') {
+function resolveStaffSalary(role) {
+  const normalizedRole = String(role || '').toUpperCase();
+  if (normalizedRole === 'CARETAKER') {
     return CARETAKER_FIXED_SALARY;
   }
+  if (normalizedRole === 'WARDEN') {
+    return WARDEN_FIXED_SALARY;
+  }
 
-  const parsed = Number(salary || 0);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 0;
+  return 0;
+}
+
+async function getUserRoleById(userId) {
+  const resolvedUserId = toNullableInt(userId);
+  if (!resolvedUserId) {
+    return null;
+  }
+
+  const result = await query('SELECT TOP 1 id, role FROM Users WHERE id = ?', [resolvedUserId]);
+  return result && result.length > 0 ? result[0] : null;
 }
 
 function normalizeStaffProfileRow(row) {
@@ -804,6 +818,11 @@ async function ensureFeatureTables() {
   await ensureColumnExists('Maintenance', 'studentApprovalStatus', "studentApprovalStatus NVARCHAR(50) NOT NULL DEFAULT 'PENDING'")
   await ensureColumnExists('Maintenance', 'studentApprovedById', 'studentApprovedById INT NULL')
   await ensureColumnExists('Maintenance', 'studentApprovedDate', 'studentApprovedDate DATETIME2 NULL')
+  await ensureColumnExists('Maintenance', 'caretakerApprovalStatus', "caretakerApprovalStatus NVARCHAR(50) NOT NULL DEFAULT 'PENDING'")
+  await ensureColumnExists('Maintenance', 'caretakerApprovedById', 'caretakerApprovedById INT NULL')
+  await ensureColumnExists('Maintenance', 'caretakerApprovedDate', 'caretakerApprovedDate DATETIME2 NULL')
+  await ensureColumnExists('Maintenance', 'closedById', 'closedById INT NULL')
+  await ensureColumnExists('Maintenance', 'closedDate', 'closedDate DATETIME2 NULL')
 
   await query(`
     IF OBJECT_ID('dbo.Payments', 'U') IS NULL
@@ -1450,9 +1469,64 @@ app.get('/api/rooms', async (req, res) => {
   }
 });
 
+app.get('/api/rooms/check-availability', async (req, res) => {
+  try {
+    const roomNumber = String(req.query.roomNumber || '').trim();
+    const block = String(req.query.block || '').trim();
+    const excludeId = toNullableInt(req.query.excludeId);
+
+    if (!roomNumber || !block) {
+      return res.status(400).json({ message: 'roomNumber and block are required' });
+    }
+
+    const params = [roomNumber, block];
+    let sqlText = `
+      SELECT TOP 1 id, roomNumber, block
+      FROM Rooms
+      WHERE LTRIM(RTRIM(roomNumber)) = ?
+        AND LTRIM(RTRIM(block)) = ?
+    `;
+
+    if (excludeId) {
+      sqlText += ' AND id <> ?';
+      params.push(excludeId);
+    }
+
+    const existing = await query(sqlText, params);
+    const available = !existing || existing.length === 0;
+
+    return res.json({
+      available,
+      roomNumber,
+      block,
+      existingId: available ? null : Number(existing[0].id),
+      message: available
+        ? 'Room number is available for this block'
+        : 'Room number already exists in this block',
+    });
+  } catch (err) {
+    console.error('Check room availability error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
 app.post('/api/rooms', async (req, res) => {
   try {
     const payload = req.body;
+    const roomNumber = String(payload.roomNumber || '').trim();
+    const block = String(payload.block || '').trim();
+    if (!roomNumber || !block) {
+      return res.status(400).json({ message: 'Room number and block are required' });
+    }
+
+    const existingRoom = await query(
+      'SELECT TOP 1 id FROM Rooms WHERE LTRIM(RTRIM(roomNumber)) = ? AND LTRIM(RTRIM(block)) = ?',
+      [roomNumber, block]
+    );
+    if (existingRoom && existingRoom.length > 0) {
+      return res.status(409).json({ message: 'Room number already exists in this block' });
+    }
+
     const floor = toNullableInt(payload.floor);
     const hostelId = toIntOrDefault(payload.hostelId, 1);
     const roomType = normalizeRoomType(payload.type);
@@ -1469,15 +1543,15 @@ app.post('/api/rooms', async (req, res) => {
     });
     await query(
       'INSERT INTO Rooms (roomNumber, block, floor, capacity, type, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, rentalCost, status, hostelId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-      [payload.roomNumber, payload.block, floor, payload.capacity, roomType, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, computedRent, payload.status || 'AVAILABLE', hostelId]
+      [roomNumber, block, floor, payload.capacity, roomType, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, computedRent, payload.status || 'AVAILABLE', hostelId]
     );
-    const insertedRoom = await query('SELECT TOP 1 * FROM Rooms WHERE roomNumber = ? AND block = ? AND floor = ? ORDER BY id DESC', [payload.roomNumber, payload.block, floor]);
+    const insertedRoom = await query('SELECT TOP 1 * FROM Rooms WHERE roomNumber = ? AND block = ? AND floor = ? ORDER BY id DESC', [roomNumber, block, floor]);
     if (insertedRoom && insertedRoom.length > 0) {
       await ensureBedsForRoom(insertedRoom[0].id, toIntOrDefault(payload.capacity, 1));
       res.status(201).json({ ...insertedRoom[0] });
       return;
     }
-    res.status(201).json({ ...payload, floor, hostelId, type: roomType, rentalCost: computedRent, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
+    res.status(201).json({ ...payload, roomNumber, block, floor, hostelId, type: roomType, rentalCost: computedRent, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
   } catch (err) {
     console.error('Create room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1584,6 +1658,20 @@ app.put('/api/rooms/:id', async (req, res) => {
   try {
     const id = Number(req.params.id);
     const payload = req.body;
+    const roomNumber = String(payload.roomNumber || '').trim();
+    const block = String(payload.block || '').trim();
+    if (!roomNumber || !block) {
+      return res.status(400).json({ message: 'Room number and block are required' });
+    }
+
+    const existingRoom = await query(
+      'SELECT TOP 1 id FROM Rooms WHERE LTRIM(RTRIM(roomNumber)) = ? AND LTRIM(RTRIM(block)) = ? AND id <> ?',
+      [roomNumber, block, id]
+    );
+    if (existingRoom && existingRoom.length > 0) {
+      return res.status(409).json({ message: 'Room number already exists in this block' });
+    }
+
     const floor = toNullableInt(payload.floor);
     const hostelId = toIntOrDefault(payload.hostelId, 1);
     const roomType = normalizeRoomType(payload.type);
@@ -1604,8 +1692,8 @@ app.put('/api/rooms/:id', async (req, res) => {
        SET roomNumber = ?, block = ?, floor = ?, capacity = ?, type = ?, hasAC = ?, hasAttachedBathroom = ?, hasWifi = ?, hasBalcony = ?, rentalCost = ?, status = ?, hostelId = ?
        WHERE id = ?`,
       [
-        payload.roomNumber,
-        payload.block,
+        roomNumber,
+        block,
         floor,
         payload.capacity,
         roomType,
@@ -1622,7 +1710,7 @@ app.put('/api/rooms/:id', async (req, res) => {
 
     await ensureBedsForRoom(id, toIntOrDefault(payload.capacity, 1));
 
-    res.json({ ...payload, id, floor, hostelId, type: roomType, rentalCost: computedRent, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
+    res.json({ ...payload, id, roomNumber, block, floor, hostelId, type: roomType, rentalCost: computedRent, hasAC, hasAttachedBathroom, hasWifi, hasBalcony });
   } catch (err) {
     console.error('Update room error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1658,12 +1746,14 @@ app.get('/api/complaints', async (req, res) => {
     const result = await query(`
       SELECT m.id, m.description, m.room, m.roomId, m.studentId, m.staffId, m.priority, m.status, m.reportedDate, m.assignedTo,
              m.assignedById, m.assignedDate, m.resolvedById, m.resolvedDate,
-             m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
+              m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
+              m.caretakerApprovalStatus, m.caretakerApprovedById, m.caretakerApprovedDate,
              s.name AS studentName,
               s.email AS studentEmail,
              st.name AS staffName,
              ab.name AS assignedByName,
              rb.name AS resolvedByName,
+              cap.name AS caretakerApprovedByName,
              sap.name AS studentApprovedByName,
              r.roomNumber
       FROM Maintenance m
@@ -1671,6 +1761,7 @@ app.get('/api/complaints', async (req, res) => {
       LEFT JOIN Users st ON m.staffId = st.id OR m.assignedTo = st.id
       LEFT JOIN Users ab ON m.assignedById = ab.id
       LEFT JOIN Users rb ON m.resolvedById = rb.id
+            LEFT JOIN Users cap ON m.caretakerApprovedById = cap.id
       LEFT JOIN Users sap ON m.studentApprovedById = sap.id
       LEFT JOIN Rooms r ON m.roomId = r.id
       ORDER BY m.reportedDate DESC
@@ -1737,28 +1828,59 @@ app.put('/api/complaints/:id', async (req, res) => {
     const studentId = toNullableInt(payload.studentId);
     const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
     const actorUserId = toNullableInt(payload.actorUserId);
+    const actorUser = await getUserRoleById(actorUserId);
     const linkedRoom = roomId ? await getRoomById(roomId) : null;
     const roomName = payload.room || linkedRoom?.roomNumber || '';
 
     if (payload.action === 'ASSIGN') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'WARDEN') {
+        return res.status(403).json({ message: 'Only the warden can assign complaints' });
+      }
+
+      if (staffId) {
+        const targetStaff = await getUserRoleById(staffId);
+        if (!targetStaff || String(targetStaff.role || '').toUpperCase() !== 'CARETAKER') {
+          return res.status(400).json({ message: 'Complaints can only be assigned to caretakers' });
+        }
+      }
+
       await query(
         `UPDATE Maintenance
          SET room = ?, roomId = ?, staffId = ?, assignedTo = ?, assignedById = ?, assignedDate = GETDATE(),
-             status = ?, studentApprovalStatus = ?
+             status = ?, studentApprovalStatus = ?, caretakerApprovalStatus = ?,
+             caretakerApprovedById = NULL, caretakerApprovedDate = NULL,
+             studentApprovedById = NULL, studentApprovedDate = NULL,
+             resolvedById = NULL, resolvedDate = NULL,
+             closedById = NULL, closedDate = NULL
          WHERE id = ?`,
-        [roomName, roomId, staffId, staffId, actorUserId, 'ASSIGNED', 'PENDING', id]
+        [roomName, roomId, staffId, staffId, actorUserId, 'ASSIGNED', 'PENDING', 'PENDING', id]
       );
 
       const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
       return res.json(updated && updated[0] ? updated[0] : { id, action: 'ASSIGN' });
     }
 
-    if (payload.action === 'RESOLVE') {
+    if (payload.action === 'RESOLVE' || payload.action === 'CARETAKER_APPROVE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'CARETAKER') {
+        return res.status(403).json({ message: 'Only the assigned caretaker can mark a complaint resolved' });
+      }
+
+      const ownership = await query('SELECT TOP 1 staffId, assignedTo, status FROM Maintenance WHERE id = ?', [id]);
+      const assignedStaffId = toNullableInt(ownership?.[0]?.staffId ?? ownership?.[0]?.assignedTo);
+      const currentStatus = String(ownership?.[0]?.status || '').toUpperCase();
+      if (!assignedStaffId || assignedStaffId !== actorUserId) {
+        return res.status(403).json({ message: 'Only the assigned caretaker can approve resolution' });
+      }
+      if (currentStatus !== 'ASSIGNED') {
+        return res.status(400).json({ message: 'Complaint is not in an assignable state for caretaker approval' });
+      }
+
       await query(
         `UPDATE Maintenance
-         SET status = ?, resolvedById = ?, resolvedDate = GETDATE()
+         SET status = ?, resolvedById = ?, resolvedDate = GETDATE(),
+             caretakerApprovalStatus = ?, caretakerApprovedById = ?, caretakerApprovedDate = GETDATE()
          WHERE id = ?`,
-        ['RESOLVED_PENDING_APPROVAL', actorUserId || staffId, id]
+        ['RESOLVED_PENDING_APPROVAL', actorUserId || staffId, 'APPROVED', actorUserId, id]
       );
 
       const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
@@ -1766,25 +1888,56 @@ app.put('/api/complaints/:id', async (req, res) => {
     }
 
     if (payload.action === 'STUDENT_APPROVE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'STUDENT') {
+        return res.status(403).json({ message: 'Only the student can approve or reject a complaint resolution' });
+      }
+
       const approvalDecision = String(payload.decision || 'APPROVED').toUpperCase();
       if (approvalDecision === 'REJECTED') {
         await query(
           `UPDATE Maintenance
-           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(), status = ?
+           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(),
+               caretakerApprovalStatus = ?, caretakerApprovedById = NULL, caretakerApprovedDate = NULL,
+               resolvedById = NULL, resolvedDate = NULL,
+               status = ?
            WHERE id = ?`,
-          ['REJECTED', actorUserId, 'ASSIGNED', id]
+          ['REJECTED', actorUserId, 'PENDING', 'ASSIGNED', id]
         );
       } else {
         await query(
           `UPDATE Maintenance
-           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(), status = ?
+           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(), status = ?, closedById = NULL, closedDate = NULL
            WHERE id = ?`,
-          ['APPROVED', actorUserId, 'CLOSED', id]
+          ['APPROVED', actorUserId, 'RESOLVED_PENDING_WARDEN_CLOSE', id]
         );
       }
 
       const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
       return res.json(updated && updated[0] ? updated[0] : { id, action: 'STUDENT_APPROVE', decision: approvalDecision });
+    }
+
+    if (payload.action === 'WARDEN_CLOSE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'WARDEN') {
+        return res.status(403).json({ message: 'Only the warden can close a complaint' });
+      }
+
+      const currentComplaint = await query('SELECT TOP 1 status, studentApprovalStatus, caretakerApprovalStatus FROM Maintenance WHERE id = ?', [id]);
+      const currentStatus = String(currentComplaint?.[0]?.status || '').toUpperCase();
+      const studentStatus = String(currentComplaint?.[0]?.studentApprovalStatus || '').toUpperCase();
+      const caretakerStatus = String(currentComplaint?.[0]?.caretakerApprovalStatus || '').toUpperCase();
+      if (currentStatus !== 'RESOLVED_PENDING_WARDEN_CLOSE' || studentStatus !== 'APPROVED' || caretakerStatus !== 'APPROVED') {
+        return res.status(400).json({ message: 'Complaint is not ready for warden close' });
+      }
+
+      await query(
+        `UPDATE Maintenance
+         SET status = ?, closedById = ?, closedDate = GETDATE()
+         WHERE id = ?`,
+        ['CLOSED', actorUserId, id]
+      );
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'WARDEN_CLOSE' });
     }
 
     await query(
@@ -1816,12 +1969,14 @@ app.get('/api/maintenance', async (req, res) => {
     const result = await query(`
       SELECT m.id, m.description, m.room, m.roomId, m.studentId, m.staffId, m.priority, m.status, m.reportedDate, m.assignedTo,
              m.assignedById, m.assignedDate, m.resolvedById, m.resolvedDate,
-             m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
+              m.studentApprovalStatus, m.studentApprovedById, m.studentApprovedDate,
+              m.caretakerApprovalStatus, m.caretakerApprovedById, m.caretakerApprovedDate,
              s.name AS studentName,
               s.email AS studentEmail,
              st.name AS staffName,
              ab.name AS assignedByName,
              rb.name AS resolvedByName,
+              cap.name AS caretakerApprovedByName,
              sap.name AS studentApprovedByName,
              r.roomNumber
       FROM Maintenance m
@@ -1829,6 +1984,7 @@ app.get('/api/maintenance', async (req, res) => {
       LEFT JOIN Users st ON m.staffId = st.id OR m.assignedTo = st.id
       LEFT JOIN Users ab ON m.assignedById = ab.id
       LEFT JOIN Users rb ON m.resolvedById = rb.id
+            LEFT JOIN Users cap ON m.caretakerApprovedById = cap.id
       LEFT JOIN Users sap ON m.studentApprovedById = sap.id
       LEFT JOIN Rooms r ON m.roomId = r.id
       ORDER BY m.reportedDate DESC
@@ -1894,8 +2050,119 @@ app.put('/api/maintenance/:id', async (req, res) => {
     const roomId = toNullableInt(payload.roomId);
     const studentId = toNullableInt(payload.studentId);
     const staffId = toNullableInt(payload.staffId ?? payload.assignedTo);
+    const actorUserId = toNullableInt(payload.actorUserId);
+    const actorUser = await getUserRoleById(actorUserId);
     const linkedRoom = roomId ? await getRoomById(roomId) : null;
     const roomName = payload.room || linkedRoom?.roomNumber || '';
+
+    if (payload.action === 'ASSIGN') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'WARDEN') {
+        return res.status(403).json({ message: 'Only the warden can assign complaints' });
+      }
+
+      if (staffId) {
+        const targetStaff = await getUserRoleById(staffId);
+        if (!targetStaff || String(targetStaff.role || '').toUpperCase() !== 'CARETAKER') {
+          return res.status(400).json({ message: 'Complaints can only be assigned to caretakers' });
+        }
+      }
+
+      await query(
+        `UPDATE Maintenance
+         SET room = ?, roomId = ?, staffId = ?, assignedTo = ?, assignedById = ?, assignedDate = GETDATE(),
+             status = ?, studentApprovalStatus = ?, caretakerApprovalStatus = ?,
+             caretakerApprovedById = NULL, caretakerApprovedDate = NULL,
+             studentApprovedById = NULL, studentApprovedDate = NULL,
+             resolvedById = NULL, resolvedDate = NULL,
+             closedById = NULL, closedDate = NULL
+         WHERE id = ?`,
+        [roomName, roomId, staffId, staffId, actorUserId, 'ASSIGNED', 'PENDING', 'PENDING', id]
+      );
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'ASSIGN' });
+    }
+
+    if (payload.action === 'RESOLVE' || payload.action === 'CARETAKER_APPROVE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'CARETAKER') {
+        return res.status(403).json({ message: 'Only the assigned caretaker can mark a complaint resolved' });
+      }
+
+      const ownership = await query('SELECT TOP 1 staffId, assignedTo, status FROM Maintenance WHERE id = ?', [id]);
+      const assignedStaffId = toNullableInt(ownership?.[0]?.staffId ?? ownership?.[0]?.assignedTo);
+      const currentStatus = String(ownership?.[0]?.status || '').toUpperCase();
+      if (!assignedStaffId || assignedStaffId !== actorUserId) {
+        return res.status(403).json({ message: 'Only the assigned caretaker can approve resolution' });
+      }
+      if (currentStatus !== 'ASSIGNED') {
+        return res.status(400).json({ message: 'Complaint is not in an assignable state for caretaker approval' });
+      }
+
+      await query(
+        `UPDATE Maintenance
+         SET status = ?, resolvedById = ?, resolvedDate = GETDATE(),
+             caretakerApprovalStatus = ?, caretakerApprovedById = ?, caretakerApprovedDate = GETDATE()
+         WHERE id = ?`,
+        ['RESOLVED_PENDING_APPROVAL', actorUserId || staffId, 'APPROVED', actorUserId, id]
+      );
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'RESOLVE' });
+    }
+
+    if (payload.action === 'STUDENT_APPROVE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'STUDENT') {
+        return res.status(403).json({ message: 'Only the student can approve or reject a complaint resolution' });
+      }
+
+      const approvalDecision = String(payload.decision || 'APPROVED').toUpperCase();
+      if (approvalDecision === 'REJECTED') {
+        await query(
+          `UPDATE Maintenance
+           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(),
+               caretakerApprovalStatus = ?, caretakerApprovedById = NULL, caretakerApprovedDate = NULL,
+               resolvedById = NULL, resolvedDate = NULL,
+               status = ?
+           WHERE id = ?`,
+          ['REJECTED', actorUserId, 'PENDING', 'ASSIGNED', id]
+        );
+      } else {
+        await query(
+          `UPDATE Maintenance
+           SET studentApprovalStatus = ?, studentApprovedById = ?, studentApprovedDate = GETDATE(), status = ?, closedById = NULL, closedDate = NULL
+           WHERE id = ?`,
+          ['APPROVED', actorUserId, 'RESOLVED_PENDING_WARDEN_CLOSE', id]
+        );
+      }
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'STUDENT_APPROVE', decision: approvalDecision });
+    }
+
+    if (payload.action === 'WARDEN_CLOSE') {
+      if (!actorUser || String(actorUser.role || '').toUpperCase() !== 'WARDEN') {
+        return res.status(403).json({ message: 'Only the warden can close a complaint' });
+      }
+
+      const currentComplaint = await query('SELECT TOP 1 status, studentApprovalStatus, caretakerApprovalStatus FROM Maintenance WHERE id = ?', [id]);
+      const currentStatus = String(currentComplaint?.[0]?.status || '').toUpperCase();
+      const studentStatus = String(currentComplaint?.[0]?.studentApprovalStatus || '').toUpperCase();
+      const caretakerStatus = String(currentComplaint?.[0]?.caretakerApprovalStatus || '').toUpperCase();
+      if (currentStatus !== 'RESOLVED_PENDING_WARDEN_CLOSE' || studentStatus !== 'APPROVED' || caretakerStatus !== 'APPROVED') {
+        return res.status(400).json({ message: 'Complaint is not ready for warden close' });
+      }
+
+      await query(
+        `UPDATE Maintenance
+         SET status = ?, closedById = ?, closedDate = GETDATE()
+         WHERE id = ?`,
+        ['CLOSED', actorUserId, id]
+      );
+
+      const updated = await query('SELECT * FROM Maintenance WHERE id = ?', [id]);
+      return res.json(updated && updated[0] ? updated[0] : { id, action: 'WARDEN_CLOSE' });
+    }
+
     await query(
       'UPDATE Maintenance SET description = ?, room = ?, roomId = ?, studentId = ?, staffId = ?, priority = ?, status = ?, assignedTo = ? WHERE id = ?',
       [payload.description, roomName, roomId, studentId, staffId, payload.priority || 'MEDIUM', payload.status || 'PENDING', staffId || null, id]
@@ -1921,8 +2188,17 @@ app.delete('/api/maintenance/:id', async (req, res) => {
 // Payments
 app.get('/api/payments', async (req, res) => {
   try {
-    const result = await query('SELECT * FROM Payments');
-    res.json(result);
+    const result = await query(`
+      SELECT p.*, s.name AS studentName, s.registrationNumber
+      FROM Payments p
+      LEFT JOIN Students s ON p.studentId = s.id
+      ORDER BY p.paymentDate DESC
+    `);
+    res.json((result || []).map((row) => ({
+      ...row,
+      paymentDate: row.paymentDate ? new Date(row.paymentDate).toISOString() : null,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    })));
   } catch (err) {
     console.error('Get payments error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -1937,7 +2213,7 @@ app.post('/api/payments', async (req, res) => {
       'INSERT INTO Payments (invoiceId, studentId, amount, paymentDate, method, reference) VALUES (?, ?, ?, ?, ?, ?)',
       [payload.invoiceId || null, payload.studentId, payload.amount, paymentDate, payload.method || 'CASH', payload.reference || '']
     );
-    res.status(201).json(payload);
+    res.status(201).json({ ...payload, paymentDate, created_at: paymentDate });
   } catch (err) {
     console.error('Create payment error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -2083,8 +2359,13 @@ app.get('/api/fees/rent-status', async (req, res) => {
     const pendingCycles = Math.max(0, dueCycles - paidCycles);
     const nextCycleToPay = paidCycles + 1;
     const nextPayDayThreshold = nextCycleToPay * 31;
-    const nextPaymentDueAt = new Date(allocation.checkInDate);
-    nextPaymentDueAt.setDate(nextPaymentDueAt.getDate() + nextPayDayThreshold);
+    
+    // Calculate nextPaymentDueAt using SQL for reliable date arithmetic
+    const dueDateRows = await query(
+      'SELECT DATEADD(day, ?, a.checkInDate) AS nextPaymentDueAt FROM Allocations a WHERE a.id = ?',
+      [nextPayDayThreshold, allocation.id]
+    );
+    const nextPaymentDueAt = dueDateRows?.[0]?.nextPaymentDueAt || new Date();
 
     const roomChange = await getRoomChangeEligibility(student.id, allocation);
 
@@ -2300,7 +2581,12 @@ app.get('/api/fees/payments/:id', async (req, res) => {
     if (!result || result.length === 0) {
       return res.status(404).json({ message: 'Not found' });
     }
-    res.json(result[0]);
+    const row = result[0];
+    res.json({
+      ...row,
+      paymentDate: row.paymentDate ? new Date(row.paymentDate).toISOString() : null,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    });
   } catch (err) {
     console.error('Get fee payment detail error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -2315,7 +2601,7 @@ app.post('/api/fees/payments', async (req, res) => {
       'INSERT INTO Payments (invoiceId, studentId, amount, paymentDate, method, reference) VALUES (?, ?, ?, ?, ?, ?)',
       [payload.invoiceId || null, payload.studentId, payload.amount, paymentDate, payload.method || 'CASH', payload.reference || '']
     );
-    res.status(201).json(payload);
+    res.status(201).json({ ...payload, paymentDate, created_at: paymentDate });
   } catch (err) {
     console.error('Create fee payment error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -2422,7 +2708,7 @@ app.post('/api/staff', async (req, res) => {
     const specialty = payload.specialty || null;
     const phone = payload.phone || null;
     const joinedDate = payload.joinedDate || null;
-    const salary = role === 'CARETAKER' ? CARETAKER_FIXED_SALARY : Number(payload.salary || 0);
+    const salary = resolveStaffSalary(role);
 
     if (!payload.name || !payload.email || !payload.password) {
       return res.status(400).json({ message: 'Name, email and password are required' });
@@ -2456,7 +2742,7 @@ app.post('/api/staff', async (req, res) => {
 
       await query(
         'INSERT INTO StaffProfiles (userId, phone, employmentStatus, [shift], specialty, joinedDate, salary) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [linkedUserId, phone, employmentStatus, shift, specialty, joinedDate, role === 'CARETAKER' ? CARETAKER_FIXED_SALARY : (Number.isFinite(salary) && salary > 0 ? salary : null)]
+        [linkedUserId, phone, employmentStatus, shift, specialty, joinedDate, salary]
       );
       await query('COMMIT TRANSACTION');
     } catch (createErr) {
@@ -2464,7 +2750,7 @@ app.post('/api/staff', async (req, res) => {
       throw createErr;
     }
 
-    res.status(201).json({ name: payload.name, email: payload.email, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate, salary: resolveStaffSalary(role, salary) });
+    res.status(201).json({ name: payload.name, email: payload.email, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate, salary: resolveStaffSalary(role) });
   } catch (err) {
     console.error('Create staff error:', err);
     res.status(500).json({ message: err.message || 'Internal server error' });
@@ -2484,7 +2770,7 @@ app.put('/api/staff/:id', async (req, res) => {
     const specialty = payload.specialty || null;
     const phone = payload.phone || null;
     const joinedDate = payload.joinedDate || null;
-    const salary = role === 'CARETAKER' ? CARETAKER_FIXED_SALARY : Number(payload.salary || 0);
+    const salary = resolveStaffSalary(role);
 
     const hostel = await query('SELECT TOP 1 id FROM Hostels WHERE id = ?', [hostelId]);
     if (!hostel || hostel.length === 0) {
@@ -2500,16 +2786,16 @@ app.put('/api/staff/:id', async (req, res) => {
     if (!profileRows || profileRows.length === 0) {
       await query(
         'INSERT INTO StaffProfiles (userId, phone, employmentStatus, [shift], specialty, joinedDate, salary) VALUES (?, ?, ?, ?, ?, ?, ?)',
-        [id, phone, employmentStatus, shift, specialty, joinedDate, role === 'CARETAKER' ? CARETAKER_FIXED_SALARY : (Number.isFinite(salary) && salary > 0 ? salary : null)]
+        [id, phone, employmentStatus, shift, specialty, joinedDate, salary]
       );
     } else {
       await query(
         'UPDATE StaffProfiles SET phone = ?, employmentStatus = ?, [shift] = ?, specialty = ?, joinedDate = ?, salary = ? WHERE userId = ?',
-        [phone, employmentStatus, shift, specialty, joinedDate, role === 'CARETAKER' ? CARETAKER_FIXED_SALARY : (Number.isFinite(salary) && salary > 0 ? salary : null), id]
+        [phone, employmentStatus, shift, specialty, joinedDate, salary, id]
       );
     }
 
-    res.json({ ...payload, id, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate, salary: resolveStaffSalary(role, salary) });
+    res.json({ ...payload, id, role, hostelId, phone, employmentStatus, shift, specialty, joinedDate, salary: resolveStaffSalary(role) });
   } catch (err) {
     console.error('Update staff error:', err);
     res.status(500).json({ message: err.message || 'Internal server error' });
@@ -2568,6 +2854,11 @@ app.post('/api/room-requests', async (req, res) => {
     let resolvedStudentId = toNullableInt(studentId);
 
     if (!resolvedStudentId && studentEmail) {
+      const account = await query('SELECT TOP 1 role FROM Users WHERE LOWER(email) = LOWER(?)', [studentEmail]);
+      if (account && account.length > 0 && String(account[0].role || '').toUpperCase() !== 'STUDENT') {
+        return res.status(403).json({ message: 'Only students can request rooms' });
+      }
+
       const student = await getStudentByEmail(studentEmail);
       resolvedStudentId = student?.id || null;
     }
@@ -2760,6 +3051,7 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
 
       await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['APPROVED', requestId]);
       await query('DELETE FROM RoomRequests WHERE studentId = ? AND id <> ?', [currentRequest.studentId, requestId]);
+      await triggerOccupancySnapshot();
       await query('COMMIT TRANSACTION');
 
       res.json({ message: 'Approved successfully', status: 'APPROVED', bedId });
@@ -2775,23 +3067,125 @@ app.put('/api/room-requests/:id/approve', async (req, res) => {
     }
     res.status(500).json({ message });
   }
-})
+});
+
+/* =========================
+   ADMIN DISAPPROVE REQUEST
+========================= */
+app.put('/api/room-requests/:id/disapprove', async (req, res) => {
+  try {
+    const requestId = Number(req.params.id);
+    const request = await query(
+      'SELECT TOP 1 rr.id, rr.studentId, rr.roomId, rr.status FROM RoomRequests rr WHERE rr.id = ?',
+      [requestId]
+    );
+
+    if (!request || request.length === 0) {
+      return res.status(404).json({ message: 'Room request not found' });
+    }
+
+    const currentRequest = request[0];
+    const currentStatus = String(currentRequest.status || '').toUpperCase();
+
+    if (currentStatus === 'APPROVED') {
+      return res.status(400).json({ message: 'Approved request cannot be disapproved' });
+    }
+
+    if (currentStatus === 'DISAPPROVED') {
+      return res.json({ message: 'Already disapproved', status: 'DISAPPROVED' });
+    }
+
+    if (!['PENDING', 'APPROVED_WAITING_SHIFT'].includes(currentStatus)) {
+      return res.status(400).json({ message: 'Only pending or waiting-shift requests can be disapproved' });
+    }
+
+    await query('UPDATE RoomRequests SET status = ? WHERE id = ?', ['DISAPPROVED', requestId]);
+    await syncRoomStatus(currentRequest.roomId);
+
+    return res.json({ message: 'Room request disapproved successfully', status: 'DISAPPROVED' });
+  } catch (err) {
+    console.error('Disapprove room request error:', err);
+    return res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+/* =========================
+   CANCEL/DELETE ROOM REQUEST
+========================= */
+app.delete('/api/room-requests/:id', async (req, res) => {
+  try {
+    const requestId = Number(req.params.id);
+    
+    const request = await query(
+      'SELECT TOP 1 rr.id, rr.studentId, rr.roomId, rr.status FROM RoomRequests rr WHERE rr.id = ?',
+      [requestId]
+    );
+
+    if (!request || request.length === 0) {
+      return res.status(404).json({ message: 'Room request not found' });
+    }
+
+    const currentRequest = request[0];
+
+    // Only allow canceling PENDING requests
+    if (currentRequest.status !== 'PENDING') {
+      return res.status(400).json({ message: 'Only pending requests can be cancelled' });
+    }
+
+    // Delete the request
+    await query('DELETE FROM RoomRequests WHERE id = ?', [requestId]);
+
+    // Update room status after cancellation
+    await syncRoomStatus(currentRequest.roomId);
+
+    res.json({ message: 'Room request cancelled successfully' });
+  } catch (err) {
+    console.error('Cancel room request error:', err);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
 
 app.get('/api/reports/occupancy', async (req, res) => {
   try {
+    await recordOccupancySnapshot();
+
+    // Return latest snapshot per room so report always contains all rooms.
     const result = await query(`
+      WITH LatestPerRoom AS (
+        SELECT
+          r.id,
+          r.roomId,
+          r.occupiedBeds,
+          r.totalBeds,
+          ROW_NUMBER() OVER (
+            PARTITION BY r.roomId
+            ORDER BY r.reportDate DESC, r.id DESC
+          ) AS rn
+        FROM dbo.OccupancyReport r
+      ),
+      RoomActivity AS (
+        SELECT
+          a.roomId,
+          MAX(a.checkInDate) AS lastAllocationAt
+        FROM dbo.Allocations a
+        GROUP BY a.roomId
+      )
       SELECT
-        r.id,
-        r.id AS roomId,
-        r.roomNumber,
-        r.capacity,
-        COUNT(CASE WHEN b.status = 'OCCUPIED' THEN 1 END) AS occupied,
-        (r.capacity - COUNT(CASE WHEN b.status = 'OCCUPIED' THEN 1 END)) AS available,
-        GETDATE() AS reportDate
-      FROM Rooms r
-      LEFT JOIN Beds b ON b.roomId = r.id
-      GROUP BY r.id, r.roomNumber, r.capacity
-      ORDER BY r.roomNumber
+        l.id,
+        l.roomId,
+        rm.roomNumber,
+        l.totalBeds AS capacity,
+        l.occupiedBeds AS occupied,
+        l.totalBeds - l.occupiedBeds AS available,
+        CASE
+          WHEN ra.lastAllocationAt IS NULL THEN NULL
+          ELSE CONVERT(VARCHAR(33), TODATETIMEOFFSET(ra.lastAllocationAt, DATEPART(TZOFFSET, SYSDATETIMEOFFSET())), 127)
+        END AS lastAllocationAt
+      FROM LatestPerRoom l
+      LEFT JOIN Rooms rm ON rm.id = l.roomId
+      LEFT JOIN RoomActivity ra ON ra.roomId = l.roomId
+      WHERE l.rn = 1
+      ORDER BY rm.roomNumber ASC
     `);
     res.json(result);
   } catch (err) {
@@ -2799,6 +3193,31 @@ app.get('/api/reports/occupancy', async (req, res) => {
     res.status(500).json({ message: 'Error fetching report' });
   }
 });
+
+// Helper function to record occupancy snapshot
+async function recordOccupancySnapshot() {
+  try {
+    await query(`
+      INSERT INTO dbo.OccupancyReport (roomId, occupiedBeds, totalBeds, reportDate)
+      SELECT
+        r.id,
+        COUNT(CASE WHEN b.status = 'OCCUPIED' THEN 1 END) AS occupiedBeds,
+        r.capacity AS totalBeds,
+        GETDATE()
+      FROM Rooms r
+      LEFT JOIN Beds b ON b.roomId = r.id
+      GROUP BY r.id, r.capacity
+    `);
+  } catch (err) {
+    console.error('Error recording occupancy snapshot:', err);
+  }
+}
+
+// Record occupancy on room checkout/allocation changes
+async function triggerOccupancySnapshot() {
+  // This will be called after finalize shift or allocation changes
+  await recordOccupancySnapshot();
+}
 
 app.get('/api/reports/dues', async (req, res) => {
   try {
@@ -3028,6 +3447,7 @@ app.post('/api/allocations', async (req, res) => {
     const refreshedReservedCount = await getReservedSeatCountForRoom(roomId);
     const newStatus = (Number(activeBeds?.[0]?.count || 0) + refreshedReservedCount) >= room[0].capacity ? 'OCCUPIED' : 'AVAILABLE';
     await query('UPDATE Rooms SET status = ? WHERE id = ?', [newStatus, roomId]);
+    await triggerOccupancySnapshot();
     
     const createdAllocation = await query(
       `SELECT TOP 1 a.id, a.studentId, a.roomId, a.bedId, a.checkInDate, a.checkOutDate, a.status,
@@ -3072,6 +3492,7 @@ app.put('/api/allocations/:id', async (req, res) => {
     );
 
     const currentBed = existing[0].bedId ?? null;
+    await triggerOccupancySnapshot();
     res.json({ id, studentId: studentId ?? existing[0].studentId, roomId: roomId ?? existing[0].roomId, checkInDate, checkOutDate, status, bedId: currentBed });
   } catch (err) {
     console.error('Update allocation error:', err);
@@ -3101,6 +3522,7 @@ app.delete('/api/allocations/:id', async (req, res) => {
     
     // Update room status
     await syncRoomStatus(roomId);
+    await triggerOccupancySnapshot();
     
     res.status(204).send();
   } catch (err) {
@@ -3712,7 +4134,7 @@ app.get('/api/payments/status/:transactionId', async (req, res) => {
       method: record.method,
       status: record.status,
       reference: record.reference || null,
-      createdAt: record.created_at,
+      createdAt: record.created_at ? new Date(record.created_at).toISOString() : null,
     });
   } catch (err) {
     console.error('❌ [PAYMENT STATUS] Server error:', err);
@@ -3745,7 +4167,11 @@ app.get('/api/payments', async (req, res) => {
     sql += ' ORDER BY p.created_at DESC';
 
     const result = await query(sql, params);
-    res.json(result);
+    res.json((result || []).map((row) => ({
+      ...row,
+      paymentDate: row.paymentDate ? new Date(row.paymentDate).toISOString() : null,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    })));
   } catch (err) {
     console.error('Get payments error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -3767,7 +4193,12 @@ app.get('/api/payments/:id', async (req, res) => {
       return res.status(404).json({ message: 'Payment not found' });
     }
 
-    res.json(result[0]);
+    const row = result[0];
+    res.json({
+      ...row,
+      paymentDate: row.paymentDate ? new Date(row.paymentDate).toISOString() : null,
+      created_at: row.created_at ? new Date(row.created_at).toISOString() : null,
+    });
   } catch (err) {
     console.error('Get payment error:', err);
     res.status(500).json({ message: 'Internal server error' });
@@ -4312,13 +4743,69 @@ app.get('/api/staff-payments/status/:transactionId', async (req, res) => {
       status: record.status,
       reference: record.reference || null,
       paidDate: record.paidDate,
-      createdAt: record.created_at,
+      createdAt: record.created_at ? new Date(record.created_at).toISOString() : null,
     });
   } catch (err) {
     console.error('Staff payment status error:', err);
     res.status(500).json({ message: 'Internal server error', error: err.message });
   }
 });
+
+// Seed sample rooms with varied attributes (one-time safe)
+async function seedSampleRooms() {
+  try {
+    // Check if we already have sample rooms (room numbers starting with specific patterns)
+    const existingRooms = await query("SELECT COUNT(*) AS cnt FROM Rooms WHERE roomNumber IN ('101-AC-WiFi', '102-AC-Bath', '103-WiFi-Balcony', '104-AC-Bath-WiFi', '105-Balcony', '201-Standard', '202-AC', '203-WiFi', '204-Bath', '205-AC-Balcony', '301-AC-WiFi-Bath', '302-AC-WiFi-Balcony', '303-Bath-Balcony', '304-Standard', '305-AC-Bath-WiFi-Balcony')");
+    
+    const count = Number(existingRooms?.[0]?.cnt || 0);
+    if (count > 0) {
+      console.log(`✓ Sample rooms already exist (${count} rooms found)`);
+      return;
+    }
+
+    const sampleRooms = [
+      { roomNumber: '101-AC-WiFi', block: 'Block A', floor: 1, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 1, hasBalcony: 0, hasAttachedBathroom: 0 },
+      { roomNumber: '102-AC-Bath', block: 'Block A', floor: 1, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 0, hasBalcony: 0, hasAttachedBathroom: 1 },
+      { roomNumber: '103-WiFi-Balcony', block: 'Block A', floor: 1, capacity: 2, type: 'SHARED', hasAC: 0, hasWifi: 1, hasBalcony: 1, hasAttachedBathroom: 0 },
+      { roomNumber: '104-AC-Bath-WiFi', block: 'Block A', floor: 1, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 1, hasBalcony: 0, hasAttachedBathroom: 1 },
+      { roomNumber: '105-Balcony', block: 'Block A', floor: 1, capacity: 3, type: 'SHARED', hasAC: 0, hasWifi: 0, hasBalcony: 1, hasAttachedBathroom: 0 },
+      { roomNumber: '201-Standard', block: 'Block B', floor: 2, capacity: 2, type: 'SHARED', hasAC: 0, hasWifi: 0, hasBalcony: 0, hasAttachedBathroom: 0 },
+      { roomNumber: '202-AC', block: 'Block B', floor: 2, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 0, hasBalcony: 0, hasAttachedBathroom: 0 },
+      { roomNumber: '203-WiFi', block: 'Block B', floor: 2, capacity: 2, type: 'SHARED', hasAC: 0, hasWifi: 1, hasBalcony: 0, hasAttachedBathroom: 0 },
+      { roomNumber: '204-Bath', block: 'Block B', floor: 2, capacity: 3, type: 'SHARED', hasAC: 0, hasWifi: 0, hasBalcony: 0, hasAttachedBathroom: 1 },
+      { roomNumber: '205-AC-Balcony', block: 'Block B', floor: 2, capacity: 1, type: 'SINGLE', hasAC: 1, hasWifi: 0, hasBalcony: 1, hasAttachedBathroom: 0 },
+      { roomNumber: '301-AC-WiFi-Bath', block: 'Block C', floor: 3, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 1, hasBalcony: 0, hasAttachedBathroom: 1 },
+      { roomNumber: '302-AC-WiFi-Balcony', block: 'Block C', floor: 3, capacity: 2, type: 'SHARED', hasAC: 1, hasWifi: 1, hasBalcony: 1, hasAttachedBathroom: 0 },
+      { roomNumber: '303-Bath-Balcony', block: 'Block C', floor: 3, capacity: 2, type: 'SHARED', hasAC: 0, hasWifi: 0, hasBalcony: 1, hasAttachedBathroom: 1 },
+      { roomNumber: '304-Standard', block: 'Block C', floor: 3, capacity: 1, type: 'SINGLE', hasAC: 0, hasWifi: 0, hasBalcony: 0, hasAttachedBathroom: 0 },
+      { roomNumber: '305-AC-Bath-WiFi-Balcony', block: 'Block C', floor: 3, capacity: 1, type: 'SINGLE', hasAC: 1, hasWifi: 1, hasBalcony: 1, hasAttachedBathroom: 1 },
+    ];
+
+    for (const room of sampleRooms) {
+      const computedRent = calculateRoomRentFromAttributes({
+        type: room.type,
+        hasAC: room.hasAC,
+        hasAttachedBathroom: room.hasAttachedBathroom,
+        hasWifi: room.hasWifi,
+        hasBalcony: room.hasBalcony,
+      });
+
+      await query(
+        'INSERT INTO Rooms (roomNumber, block, floor, capacity, type, hasAC, hasAttachedBathroom, hasWifi, hasBalcony, rentalCost, status, hostelId) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        [room.roomNumber, room.block, room.floor, room.capacity, room.type, room.hasAC, room.hasAttachedBathroom, room.hasWifi, room.hasBalcony, computedRent, 'AVAILABLE', 1]
+      );
+
+      const insertedRoom = await query('SELECT TOP 1 id FROM Rooms WHERE roomNumber = ?', [room.roomNumber]);
+      if (insertedRoom && insertedRoom.length > 0) {
+        await ensureBedsForRoom(insertedRoom[0].id, room.capacity);
+      }
+    }
+
+    console.log(`✓ Seeded ${sampleRooms.length} sample rooms with varied attributes`);
+  } catch (err) {
+    console.error('Error seeding sample rooms:', err);
+  }
+}
 
 // Start server
 async function startServer() {
@@ -4329,6 +4816,8 @@ async function startServer() {
   }
 
   await ensureFeatureTables();
+  await seedSampleRooms();
+  await recordOccupancySnapshot();
 
   app.listen(PORT, () => {
     console.log(`✓ Hostel Management System Backend running on http://localhost:${PORT}/api`);

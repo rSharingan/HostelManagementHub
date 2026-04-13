@@ -16,3 +16,13 @@ export const approveRoomRequestAPI = async (id) => {
   const { data } = await axios.put(API_ENDPOINTS.ROOM_REQUESTS.APPROVE(id))
   return data
 }
+
+export const disapproveRoomRequestAPI = async (id) => {
+  const { data } = await axios.put(API_ENDPOINTS.ROOM_REQUESTS.DISAPPROVE(id))
+  return data
+}
+
+export const cancelRoomRequestAPI = async (id) => {
+  const { data } = await axios.delete(API_ENDPOINTS.ROOM_REQUESTS.CANCEL(id))
+  return data
+}

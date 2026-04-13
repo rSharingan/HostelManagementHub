@@ -7,6 +7,7 @@ import {
   updateRoomAPI,
   deleteRoomAPI,
   applyRoomAPI,
+  checkRoomNumberAvailabilityAPI,
 } from './api'
 
 const ROOMS_QUERY_KEY = ['rooms']
@@ -67,5 +68,14 @@ export const useApplyRoom = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ROOMS_QUERY_KEY })
     },
+  })
+}
+
+export const useRoomNumberAvailability = (params, enabled = false) => {
+  return useQuery({
+    queryKey: [...ROOMS_QUERY_KEY, 'room-number-availability', params],
+    queryFn: () => checkRoomNumberAvailabilityAPI(params),
+    enabled,
+    retry: false,
   })
 }

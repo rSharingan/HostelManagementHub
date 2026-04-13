@@ -30,3 +30,8 @@ export const applyRoomAPI = async (id) => {
   const { data } = await axios.post(API_ENDPOINTS.ROOMS.APPLY(id))
   return data
 }
+
+export const checkRoomNumberAvailabilityAPI = async (params) => {
+  const { data } = await axios.get(API_ENDPOINTS.ROOMS.CHECK_AVAILABILITY, { params })
+  return data
+}

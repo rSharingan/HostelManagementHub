@@ -123,20 +123,28 @@ export const RoomDetailsPage = () => {
             </div>
 
             <div className="mt-6 flex items-center gap-3">
-              <Badge variant={isFull ? 'primary' : 'success'}>
+              <Badge variant={isFull ? 'primary' : 'success'} className="px-4 py-2">
                 {isFull ? 'FULL' : 'AVAILABLE'}
               </Badge>
-              {user?.role === 'STUDENT' && !isFull && (
-                <div className="flex gap-3">
-                  <Button onClick={handleApply} disabled={createRoomRequest.isPending || isRequested} variant="primary">
-                    {isRequested ? 'Requested' : 'Apply for this Room'}
-                  </Button>
-                  <Button onClick={() => navigate('/rooms')} variant="secondary">
-                    Cancel
-                  </Button>
-                </div>
+              {isRequested ? (
+                <Badge variant="warning" className="px-4 py-2">
+                  REQUESTED
+                </Badge>
+              ) : (
+                <span className="text-gray-500 dark:text-dark-400 text-sm">Not requested</span>
               )}
             </div>
+
+            {user?.role === 'STUDENT' && !isFull && (
+              <div className="mt-6 flex gap-3">
+                <Button onClick={handleApply} disabled={createRoomRequest.isPending || isRequested} className="flex-1">
+                  {isRequested ? 'Request Submitted' : 'Apply for this Room'}
+                </Button>
+                <Button onClick={() => navigate('/rooms')} variant="secondary" className="flex-1">
+                  Cancel
+                </Button>
+              </div>
+            )}
           </CardContent>
         </Card>
       ) : (

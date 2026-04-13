@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { PageHeader } from '../../components/common/PageHeader'
 import { Card, CardContent, CardHeader } from '../../components/ui/Card'
@@ -16,23 +17,55 @@ import { API_ENDPOINTS } from '../../lib/api/endpoints'
 
 const statusVariant = (status) => {
   switch (status) {
-    case 'CLOSED':
-      return 'success'
-    case 'RESOLVED_PENDING_APPROVAL':
-      return 'primary'
+    case 'PENDING_ASSIGNMENT':
+      return 'secondary'
     case 'ASSIGNED':
       return 'warning'
+    case 'RESOLVED_PENDING_APPROVAL':
+      return 'primary'
+    case 'RESOLVED_PENDING_WARDEN_CLOSE':
+      return 'warning'
+    case 'CLOSED':
+      return 'success'
     default:
       return 'secondary'
   }
 }
 
+const approvalVariant = (status) => {
+  const normalized = String(status || 'PENDING').toUpperCase()
+  if (normalized === 'APPROVED') {
+    return 'success'
+  }
+  if (normalized === 'REJECTED') {
+    return 'danger'
+  }
+  return 'secondary'
+}
+
+const statusLabel = (status) => {
+  switch (status) {
+    case 'PENDING_ASSIGNMENT':
+      return 'Pending Assignment'
+    case 'ASSIGNED':
+      return 'Assigned'
+    case 'RESOLVED_PENDING_APPROVAL':
+      return 'Resolved - Waiting Student'
+    case 'RESOLVED_PENDING_WARDEN_CLOSE':
+      return 'Resolved - Waiting Warden'
+    case 'CLOSED':
+      return 'Closed'
+    default:
+      return status || 'Unknown'
+  }
+}
+
 const canAssignComplaint = (userRole, complaint) => {
-  return userRole === 'ADMIN' && ['PENDING_ASSIGNMENT', 'ASSIGNED'].includes(complaint.status)
+  return userRole === 'WARDEN' && complaint.status === 'PENDING_ASSIGNMENT'
 }
 
 const canResolveComplaint = (userId, userRole, complaint) => {
-  return ['WARDEN', 'CARETAKER'].includes(userRole)
+  return userRole === 'CARETAKER'
     && String(complaint.staffId || complaint.assignedTo || '') === String(userId)
     && complaint.status === 'ASSIGNED'
 }
@@ -41,9 +74,17 @@ const canApproveComplaint = (userEmail, userRole, complaint) => {
   return userRole === 'STUDENT'
     && String((complaint.studentEmail || '').toLowerCase()) === String((userEmail || '').toLowerCase())
     && complaint.status === 'RESOLVED_PENDING_APPROVAL'
+    && String(complaint.caretakerApprovalStatus || '').toUpperCase() === 'APPROVED'
+}
+
+const canCloseComplaint = (userRole, complaint) => {
+  return userRole === 'WARDEN'
+    && complaint.status === 'RESOLVED_PENDING_WARDEN_CLOSE'
+    && String(complaint.studentApprovalStatus || '').toUpperCase() === 'APPROVED'
 }
 
 export const MaintenancePage = () => {
+  const navigate = useNavigate()
   const { user } = useAuth()
   const queryClient = useQueryClient()
   const { data: complaints = [], isLoading } = useMaintenance()
@@ -69,7 +110,7 @@ export const MaintenancePage = () => {
       return complaints.filter((complaint) => String((complaint.studentEmail || '').toLowerCase()) === String((user.email || '').toLowerCase()))
     }
 
-    if (['WARDEN', 'CARETAKER'].includes(user.role)) {
+    if (user.role === 'CARETAKER') {
       return complaints.filter((complaint) => String(complaint.staffId || complaint.assignedTo || '') === String(user.id))
     }
 
@@ -83,7 +124,6 @@ export const MaintenancePage = () => {
     }
 
     return {
-      roomId: complaint.roomId ? String(complaint.roomId) : '',
       staffId: complaint.staffId ? String(complaint.staffId) : '',
     }
   }
@@ -131,10 +171,11 @@ export const MaintenancePage = () => {
       await axios.put(API_ENDPOINTS.COMPLAINTS.UPDATE(complaint.id), {
         action: 'ASSIGN',
         actorUserId: user?.id,
-        roomId: draft.roomId ? Number(draft.roomId) : null,
+        roomId: complaint.roomId ? Number(complaint.roomId) : null,
+        room: complaint.roomNumber || complaint.room || null,
         staffId: Number(draft.staffId),
       })
-      toast.success('Complaint assigned to staff')
+      toast.success('Complaint assigned to caretaker')
       await queryClient.invalidateQueries({ queryKey: ['maintenance'] })
     } catch {
       toast.error('Failed to assign complaint')
@@ -161,10 +202,27 @@ export const MaintenancePage = () => {
         actorUserId: user?.id,
         decision,
       })
-      toast.success(decision === 'APPROVED' ? 'Complaint approved and closed' : 'Complaint rejected and reopened')
+      toast.success(
+        decision === 'APPROVED'
+          ? 'Complaint approved. Waiting for warden close.'
+          : 'Complaint rejected and reopened',
+      )
       await queryClient.invalidateQueries({ queryKey: ['maintenance'] })
     } catch {
       toast.error('Failed to submit approval decision')
+    }
+  }
+
+  const handleWardenClose = async (complaint) => {
+    try {
+      await axios.put(API_ENDPOINTS.COMPLAINTS.UPDATE(complaint.id), {
+        action: 'WARDEN_CLOSE',
+        actorUserId: user?.id,
+      })
+      toast.success('Complaint closed successfully')
+      await queryClient.invalidateQueries({ queryKey: ['maintenance'] })
+    } catch {
+      toast.error('Failed to close complaint')
     }
   }
 
@@ -178,7 +236,7 @@ export const MaintenancePage = () => {
   }
 
   const assignableStaff = staff.filter((member) => {
-    const isOperationalRole = ['WARDEN', 'CARETAKER'].includes(member.role)
+    const isOperationalRole = member.role === 'CARETAKER'
     const isAvailable = !member.employmentStatus || member.employmentStatus === 'ACTIVE'
     return isOperationalRole && isAvailable
   })
@@ -188,7 +246,25 @@ export const MaintenancePage = () => {
     { header: 'Description', accessorKey: 'description' },
     {
       header: 'Room',
-      cell: ({ row }) => row.original.roomNumber || row.original.room || 'Not linked',
+      cell: ({ row }) => {
+        const roomId = row.original.roomId
+        const roomLabel = row.original.roomNumber || row.original.room || 'Not linked'
+
+        if (!roomId) {
+          return roomLabel
+        }
+
+        return (
+          <Button
+            size="sm"
+            variant="ghost"
+            className="px-2"
+            onClick={() => navigate(`/rooms/${roomId}`)}
+          >
+            {roomLabel}
+          </Button>
+        )
+      },
     },
     {
       header: 'Student',
@@ -198,6 +274,28 @@ export const MaintenancePage = () => {
       header: 'Assigned Staff',
       cell: ({ row }) => row.original.staffName || 'Unassigned',
     },
+    {
+      header: 'Assigned By',
+      cell: ({ row }) => row.original.assignedByName || 'N/A',
+    },
+    {
+      header: 'Resolved By',
+      cell: ({ row }) => row.original.resolvedByName || 'N/A',
+    },
+    {
+      header: 'Caretaker Approval',
+      cell: ({ row }) => {
+        const status = String(row.original.caretakerApprovalStatus || 'PENDING').toUpperCase()
+        return <Badge variant={approvalVariant(status)}>{status}</Badge>
+      },
+    },
+    {
+      header: 'Student Approval',
+      cell: ({ row }) => {
+        const status = String(row.original.studentApprovalStatus || 'PENDING').toUpperCase()
+        return <Badge variant={approvalVariant(status)}>{status}</Badge>
+      },
+    },
     { header: 'Priority', accessorKey: 'priority' },
     {
       header: 'Status',
@@ -205,7 +303,7 @@ export const MaintenancePage = () => {
       cell: ({ row }) => (
         <div className="flex flex-col gap-1">
           <Badge variant={statusVariant(row.original.status)}>
-            {row.original.status}
+            {statusLabel(row.original.status)}
           </Badge>
           {row.original.studentApprovalStatus && (
             <span className="text-xs text-gray-500 dark:text-dark-400">Student: {row.original.studentApprovalStatus}</span>
@@ -228,34 +326,26 @@ export const MaintenancePage = () => {
                   value={draft.staffId}
                   onChange={(e) => setDraft(complaint.id, 'staffId', e.target.value)}
                 >
-                  <option value="">Select staff</option>
+                  <option value="">Select caretaker</option>
                   {assignableStaff.map((member) => (
                     <option key={member.id} value={member.id}>
                       {member.name} ({member.role})
                     </option>
                   ))}
                 </select>
-                <select
-                  className="w-full px-2 py-1 border border-gray-300 dark:border-dark-600 rounded bg-white dark:bg-dark-800 text-gray-900 dark:text-dark-50"
-                  value={draft.roomId}
-                  onChange={(e) => setDraft(complaint.id, 'roomId', e.target.value)}
-                >
-                  <option value="">Select room</option>
-                  {rooms.map((room) => (
-                    <option key={room.id} value={room.id}>
-                      {room.roomNumber}
-                    </option>
-                  ))}
-                </select>
                 <Button size="sm" onClick={() => handleAssign(complaint)}>
-                  Assign
+                  Assign Caretaker
                 </Button>
               </>
             )}
 
+            {user?.role === 'WARDEN' && complaint.status === 'ASSIGNED' && (
+              <Badge variant="success">Assigned</Badge>
+            )}
+
             {canResolveComplaint(user?.id, user?.role, complaint) && (
               <Button size="sm" variant="secondary" onClick={() => handleResolve(complaint)}>
-                Mark Resolved
+                Approve as Resolved
               </Button>
             )}
 
@@ -268,6 +358,19 @@ export const MaintenancePage = () => {
                   Reject
                 </Button>
               </div>
+            )}
+
+            {user?.role === 'STUDENT'
+              && String((complaint.studentEmail || '').toLowerCase()) === String((user?.email || '').toLowerCase())
+              && complaint.status === 'ASSIGNED'
+              && String(complaint.caretakerApprovalStatus || '').toUpperCase() !== 'APPROVED' && (
+                <span className="text-xs text-gray-500 dark:text-dark-400">Waiting for caretaker approval</span>
+            )}
+
+            {canCloseComplaint(user?.role, complaint) && (
+              <Button size="sm" variant="secondary" onClick={() => handleWardenClose(complaint)}>
+                Close Complaint
+              </Button>
             )}
 
             {user?.role === 'ADMIN' && (
@@ -285,7 +388,7 @@ export const MaintenancePage = () => {
     <div>
       <PageHeader
         title="Complaints & Maintenance"
-        description="Assign staff, track resolutions, and close complaints with student approval"
+        description="Wardens assign caretakers, caretakers resolve issues, and wardens close complaints after student approval"
         breadcrumbs={[
           { label: 'Dashboard', href: '/dashboard' },
           { label: 'Maintenance' },

@@ -31,8 +31,9 @@ export const StaffPage = () => {
     shift: 'DAY',
     specialty: '',
     joinedDate: today,
-    salary: '',
   })
+
+  const fixedSalary = form.role === 'CARETAKER' ? 10000 : 20000
 
   const handleCreate = async (e) => {
     e.preventDefault()
@@ -56,7 +57,6 @@ export const StaffPage = () => {
       shift: form.shift,
       specialty: form.specialty,
       joinedDate: form.joinedDate,
-      salary: form.role === 'WARDEN' ? Number(form.salary || 0) : undefined,
     }
 
     try {
@@ -74,7 +74,6 @@ export const StaffPage = () => {
         shift: 'DAY',
         specialty: '',
         joinedDate: today,
-        salary: '',
       })
     } catch (error) {
       toast.error(error?.response?.data?.message || 'Failed to create staff member')
@@ -278,18 +277,13 @@ export const StaffPage = () => {
               onChange={(e) => setForm((prev) => ({ ...prev, joinedDate: e.target.value }))}
               className="md:col-span-2"
             />
-            <Input
-              name="salary"
-              label="Salary (BDT)"
-              type="number"
-              min="0"
-              placeholder={form.role === 'CARETAKER' ? 'Fixed by policy' : 'Monthly salary'}
-              value={form.salary}
-              onChange={(e) => setForm((prev) => ({ ...prev, salary: e.target.value }))}
-              className="md:col-span-2"
-              disabled={form.role === 'CARETAKER'}
-              required={form.role === 'WARDEN'}
-            />
+            <div className="md:col-span-2">
+              <label className="block text-sm font-medium text-gray-700 dark:text-dark-300 mb-1">Fixed Salary</label>
+              <div className="w-full px-3 py-2 border border-gray-300 dark:border-dark-600 rounded-lg bg-gray-50 dark:bg-dark-800 text-gray-900 dark:text-dark-50">
+                {formatCurrency(fixedSalary)}
+              </div>
+              <p className="text-xs text-gray-500 dark:text-dark-400 mt-1">Salary is fixed by role and cannot be edited here.</p>
+            </div>
             <Input
               name="hostelId"
               label="Hostel ID"

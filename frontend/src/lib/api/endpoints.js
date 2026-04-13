@@ -21,11 +21,14 @@ export const API_ENDPOINTS = {
     UPDATE: (id) => `/rooms/${id}`,
     DELETE: (id) => `/rooms/${id}`,
     APPLY: (id) => `/rooms/${id}/apply`,
+    CHECK_AVAILABILITY: '/rooms/check-availability',
   },
   ROOM_REQUESTS: {
     LIST: '/room-requests',
     CREATE: '/room-requests',
     APPROVE: (id) => `/room-requests/${id}/approve`,
+    DISAPPROVE: (id) => `/room-requests/${id}/disapprove`,
+    CANCEL: (id) => `/room-requests/${id}`,
   },
   ALLOCATIONS: {
     LIST: '/allocations',

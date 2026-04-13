@@ -1,7 +1,7 @@
 // path: src/features/rooms/RoomsPage.jsx
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Plus, Trash2, Edit2, CheckCircle } from 'lucide-react'
+import { Plus, Trash2, Edit2, CheckCircle, X } from 'lucide-react'
 import { useRooms, useDeleteRoom } from './hooks'
 import { PageHeader } from '../../components/common/PageHeader'
 import { DataTable } from '../../components/common/DataTable'
@@ -12,7 +12,7 @@ import { Badge } from '../../components/ui/Badge'
 import { formatCurrency } from '../../lib/utils'
 import { toast } from 'sonner'
 import { useAuth } from '../auth/hooks'
-import { useCreateRoomRequest, useRoomRequests } from '../roomRequests/hooks'
+import { useCreateRoomRequest, useRoomRequests, useCancelRoomRequest } from '../roomRequests/hooks'
 import { useRentStatus } from '../fees/hooks'
 
 export const RoomsPage = () => {
@@ -22,6 +22,7 @@ export const RoomsPage = () => {
   const { user } = useAuth()
   const [deleteId, setDeleteId] = useState(null)
   const [applyingRoomId, setApplyingRoomId] = useState(null)
+  const [cancellingRequestId, setCancellingRequestId] = useState(null)
   const [optimisticRequestedRoomIds, setOptimisticRequestedRoomIds] = useState([])
   const [filters, setFilters] = useState({
     availableOnly: false,
@@ -39,6 +40,7 @@ export const RoomsPage = () => {
     user?.role === 'STUDENT' ? { studentEmail: user?.email } : undefined,
     user?.role === 'STUDENT',
   )
+  const cancelRoomRequest = useCancelRoomRequest()
 
   const requestedRoomIds = useMemo(() => {
     if (user?.role !== 'STUDENT') {
@@ -46,7 +48,7 @@ export const RoomsPage = () => {
     }
 
     const roomIds = roomRequests
-      .filter((request) => request.status === 'PENDING')
+      .filter((request) => String(request.status || '').toUpperCase() === 'PENDING')
       .map((request) => String(request.roomId))
 
     optimisticRequestedRoomIds.forEach((roomId) => {
@@ -58,21 +60,38 @@ export const RoomsPage = () => {
     return new Set(roomIds)
   }, [optimisticRequestedRoomIds, roomRequests, user?.role])
 
+  const latestRequestByRoomId = useMemo(() => {
+    const map = new Map()
+    if (user?.role !== 'STUDENT') {
+      return map
+    }
+
+    // API already returns requests in DESC order; keep first occurrence per room as latest.
+    for (const request of roomRequests) {
+      const roomId = String(request.roomId)
+      if (!map.has(roomId)) {
+        map.set(roomId, {
+          id: request.id,
+          status: String(request.status || '').toUpperCase(),
+        })
+      }
+    }
+
+    return map
+  }, [roomRequests, user?.role])
+
   const requestStatusByRoomId = useMemo(() => {
     const map = new Map()
     if (user?.role !== 'STUDENT') {
       return map
     }
 
-    for (const request of roomRequests) {
-      const roomId = String(request.roomId)
-      if (!map.has(roomId)) {
-        map.set(roomId, String(request.status || '').toUpperCase())
-      }
+    for (const [roomId, info] of latestRequestByRoomId.entries()) {
+      map.set(roomId, info.status)
     }
 
     return map
-  }, [roomRequests, user?.role])
+  }, [latestRequestByRoomId, user?.role])
 
   const filteredRooms = useMemo(() => {
     return rooms.filter((room) => {
@@ -127,6 +146,18 @@ export const RoomsPage = () => {
       toast.error(error?.response?.data?.message || 'Failed to apply for room')
     } finally {
       setApplyingRoomId(null)
+    }
+  }
+
+  const handleCancelRequest = async (requestId) => {
+    try {
+      setCancellingRequestId(requestId)
+      await cancelRoomRequest.mutateAsync(requestId)
+      toast.success('Room request cancelled successfully')
+    } catch (error) {
+      toast.error(error?.response?.data?.message || 'Failed to cancel room request')
+    } finally {
+      setCancellingRequestId(null)
     }
   }
 
@@ -244,8 +275,10 @@ export const RoomsPage = () => {
               </Button>
             </div>
           )
-        } else {
+        } else if (user?.role === 'STUDENT') {
           // Student view
+          const latestRequest = latestRequestByRoomId.get(String(row.original.id))
+          const pendingRequestId = latestRequest?.status === 'PENDING' ? latestRequest.id : null
           return (
             <div className="flex gap-2">
               {requestStatus === 'APPROVED_WAITING_SHIFT' ? (
@@ -253,7 +286,19 @@ export const RoomsPage = () => {
               ) : requestStatus === 'APPROVED' ? (
                 <Badge variant="success">Approved</Badge>
               ) : requestStatus === 'PENDING' ? (
-                <Badge variant="warning">Pending Approval</Badge>
+                <>
+                  <Badge variant="warning">Pending Approval</Badge>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => handleCancelRequest(pendingRequestId)}
+                    disabled={!pendingRequestId || cancellingRequestId === pendingRequestId || cancelRoomRequest.isPending}
+                    className="gap-2 text-red-600 hover:text-red-700 hover:bg-red-50"
+                  >
+                    <X size={16} />
+                    Cancel Request
+                  </Button>
+                </>
               ) : isRequested ? (
                 <Badge variant="warning">Requested</Badge>
               ) : isCurrentRoom ? (
@@ -274,6 +319,8 @@ export const RoomsPage = () => {
               )}
             </div>
           )
+        } else {
+          return <span className="text-gray-500 dark:text-dark-400 text-sm">View only</span>
         }
       },
     },
@@ -283,7 +330,7 @@ export const RoomsPage = () => {
     <div>
       <PageHeader
         title="Rooms"
-        description={user?.role === 'ADMIN' ? "Manage hostel rooms" : "Available rooms for application"}
+        description={user?.role === 'ADMIN' ? 'Manage hostel rooms' : user?.role === 'STUDENT' ? 'Available rooms for application' : 'View hostel rooms'}
         breadcrumbs={[
           { label: 'Dashboard', href: '/dashboard' },
           { label: 'Rooms' },

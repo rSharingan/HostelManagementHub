@@ -2,6 +2,7 @@
 import { useMemo, useState } from 'react'
 import { PageHeader } from '../../components/common/PageHeader'
 import { Card, CardContent, CardHeader } from '../../components/ui/Card'
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from '../../components/ui/Dialog'
 import { DataTable } from '../../components/common/DataTable'
 import { CountdownTimer } from '../../components/common/CountdownTimer'
 import {
@@ -43,6 +44,7 @@ export const PaymentsPage = () => {
   const initiateStaffPayment = useInitiateStaffPayment()
   const createStaffSalaryPrompt = useCreateStaffSalaryPrompt()
   const resolveStaffSalaryPrompt = useResolveStaffSalaryPrompt()
+  const [isRentDialogOpen, setIsRentDialogOpen] = useState(false)
   const [form, setForm] = useState({
     invoiceId: '',
     studentId: '',
@@ -64,6 +66,10 @@ export const PaymentsPage = () => {
     const selected = allStaff.find((member) => String(member.id) === String(staffPayForm.staffUserId || ''))
     return Number(selected?.salary || 0)
   }, [allStaff, staffPayForm.staffUserId])
+
+  const rentAmount = Number(rentStatus?.monthlyRent || 0)
+  const currentBalance = Number(rentStatus?.currentBalance || balanceInfo?.balance || user?.balance || 0)
+  const projectedBalance = Math.max(0, currentBalance - rentAmount)
 
   const handleCreate = async (e) => {
     e.preventDefault()
@@ -89,9 +95,15 @@ export const PaymentsPage = () => {
         method: rentMethod,
       })
       toast.success('Rent payment completed')
+      setIsRentDialogOpen(false)
     } catch (error) {
       toast.error(error.response?.data?.message || 'Unable to complete rent payment')
     }
+  }
+
+  const handleOpenRentDialog = () => {
+    setRentMethod('BKASH')
+    setIsRentDialogOpen(true)
   }
 
   const handleInitiateStaffPayment = async (e) => {
@@ -200,7 +212,10 @@ export const PaymentsPage = () => {
     {
       header: 'Date',
       accessorKey: 'created_at',
-      cell: ({ row }) => row.original.created_at ? new Date(row.original.created_at).toLocaleDateString() : 'N/A',
+      cell: ({ row }) => {
+        const paymentMoment = row.original.paymentDate || row.original.created_at
+        return paymentMoment ? new Date(paymentMoment).toLocaleString() : 'N/A'
+      },
     },
     { header: 'Method', accessorKey: 'method' },
     {
@@ -398,6 +413,8 @@ export const PaymentsPage = () => {
           <CardContent>
             {!rentStatus ? (
               <p className="text-gray-600 dark:text-dark-400">Loading rent status...</p>
+            ) : !rentStatus.hasActiveAllocation ? (
+              <p className="text-gray-600 dark:text-dark-400">You have not been allocated a room yet. Once you get a room, you can pay rent here.</p>
             ) : (
               <div className="space-y-4">
                 {rentStatus.notifyRent && (
@@ -416,19 +433,23 @@ export const PaymentsPage = () => {
                     <p className="text-gray-700 dark:text-dark-300">Pending cycles: {rentStatus.pendingCycles}</p>
                   </div>
                   <div>
-                    <p className="text-gray-700 dark:text-dark-300">Monthly rent: {formatCurrency(rentStatus.monthlyRent || 0)}</p>
+                    <p className="text-gray-700 dark:text-dark-300">Monthly rent: {formatCurrency(rentAmount)}</p>
+                    <p className="text-gray-700 dark:text-dark-300">Payment cycle: {rentStatus.nextCycleToPay}</p>
+                    <p className="text-gray-700 dark:text-dark-300">Room: {rentStatus.roomNumber || 'Not allocated'}</p>
                     <p className="text-gray-700 dark:text-dark-300">Months paid: {rentStatus.monthsPaid || 0}</p>
-                    <p className="text-gray-700 dark:text-dark-300">Balance: {formatCurrency(rentStatus.currentBalance || balanceInfo?.balance || 0)}</p>
+                    <p className="text-gray-700 dark:text-dark-300">Balance: {formatCurrency(currentBalance)}</p>
                     <p className="text-gray-700 dark:text-dark-300">Room change: {rentStatus.canRequestRoomChange ? 'Allowed' : `Allowed in ${rentStatus.daysUntilRoomChangeAllowed || 0} day(s)`}</p>
                   </div>
                 </div>
 
-                <div className="pt-4 border-t border-gray-200 dark:border-dark-700">
-                  <CountdownTimer
-                    targetAt={rentStatus.nextPaymentDueAt}
-                    daysUntil={rentStatus.daysUntilPaymentDue}
-                  />
-                </div>
+                {rentStatus.nextPaymentDueAt && (
+                  <div className="pt-4 border-t border-gray-200 dark:border-dark-700">
+                    <CountdownTimer
+                      targetAt={rentStatus.nextPaymentDueAt}
+                      daysUntil={rentStatus.daysUntilPaymentDue}
+                    />
+                  </div>
+                )}
 
                 <div className="pt-4 border-t border-gray-200 dark:border-dark-700 space-y-2">
                   <p className="text-sm text-green-600 dark:text-green-400">Consecutive payment months: {rentStatus.consecutiveMonths || 0}</p>
@@ -445,7 +466,7 @@ export const PaymentsPage = () => {
                     </select>
                   </div>
                   <Button
-                    onClick={handleStudentRentPayment}
+                    onClick={handleOpenRentDialog}
                     disabled={!rentStatus.canPayNow || payRent.isPending}
                     className="w-full"
                   >
@@ -457,6 +478,48 @@ export const PaymentsPage = () => {
           </CardContent>
         </Card>
       )}
+
+      <Dialog open={isRentDialogOpen} onOpenChange={setIsRentDialogOpen}>
+        <DialogHeader>
+          <DialogTitle>Confirm Rent Payment</DialogTitle>
+        </DialogHeader>
+        <DialogContent className="space-y-4">
+          <div className="rounded-lg border border-gray-200 dark:border-dark-700 p-4 space-y-2 text-sm">
+            <p className="flex items-center justify-between">
+              <span className="text-gray-600 dark:text-dark-400">Amount</span>
+              <span className="font-semibold text-gray-900 dark:text-dark-50">{formatCurrency(rentAmount)}</span>
+            </p>
+            <p className="flex items-center justify-between">
+              <span className="text-gray-600 dark:text-dark-400">Current balance</span>
+              <span className="font-semibold text-gray-900 dark:text-dark-50">{formatCurrency(currentBalance)}</span>
+            </p>
+            <p className="flex items-center justify-between">
+              <span className="text-gray-600 dark:text-dark-400">Balance after payment</span>
+              <span className="font-semibold text-emerald-700 dark:text-emerald-300">{formatCurrency(projectedBalance)}</span>
+            </p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-700 dark:text-dark-300 mb-1">Payment Method</label>
+            <select
+              className="w-full px-3 py-2 border border-gray-300 dark:border-dark-600 rounded-lg bg-white dark:bg-dark-800 text-gray-900 dark:text-dark-50"
+              value={rentMethod}
+              onChange={(e) => setRentMethod(e.target.value)}
+            >
+              <option value="BKASH">bKash</option>
+              <option value="NAGAD">Nagad</option>
+            </select>
+          </div>
+        </DialogContent>
+        <DialogFooter>
+          <Button variant="ghost" onClick={() => setIsRentDialogOpen(false)} disabled={payRent.isPending}>
+            Cancel
+          </Button>
+          <Button onClick={handleStudentRentPayment} disabled={payRent.isPending}>
+            {payRent.isPending ? 'Processing...' : 'Pay'}
+          </Button>
+        </DialogFooter>
+      </Dialog>
 
       {user?.role === 'ADMIN' && (
         <Card className="mt-6">
@@ -484,7 +547,6 @@ export const PaymentsPage = () => {
                 placeholder="Salary"
                 value={selectedStaffSalary}
                 readOnly
-                helperText="Automatically taken from staff salary policy"
               />
               <Input
                 name="cycleMonth"
